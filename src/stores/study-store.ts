@@ -1,253 +1,394 @@
 import { create } from 'zustand'
-import type { WordEntry, TrainingMode, QuizState, StudyRecord } from '../types'
-import { n5Words } from '../data/n5-words'
 import { db } from '../db/schema'
+import { WORDS, WORDS_BY_ID } from '../data/words'
+import type { DrillMode, SenseState, SessionRecord, Settings } from '../types'
+import { DEFAULT_SETTINGS, DRILL_ORDER } from '../types'
+import {
+  advanceLadder, buildOptions, buildSessionQueue, freshState,
+  noteMode, resetLadder, REVIEW_LADDER,
+  type Question,
+} from '../engine/review-scheduler'
+import { gradeSpelling } from '../engine/romaji'
 
-interface StudyStore {
-  // Session state
-  isActive: boolean
-  currentIndex: number
-  currentMode: TrainingMode
-  modeOrder: TrainingMode[]
-  sessionWords: WordEntry[]
-  sessionQueue: WordEntry[]
-  completedWords: number[]
-  wrongWords: number[]
-  
-  // Current quiz
-  quiz: QuizState | null
-  
-  // Records
-  records: Map<number, StudyRecord>
-  
-  // Actions
+export type RunningState = 'idle' | 'drill' | 'summary'
+
+interface Snapshot {
+  recBefore: SenseState
+  passWrongBefore: boolean
+  doneBefore: { correct: number; wrong: number; sensePasses: number }
+}
+
+interface Runtime {
+  state: RunningState
+  queue: number[]
+  current: number | null
+  modePos: number          // index into DRILL_ORDER for `current`
+  passWrong: boolean       // this sense's pass has had a mistake
+  question: Question | null
+  questionAt: number | null
+  feedback: { correct: boolean; guessed?: boolean; picked?: number } | null
+  lastUndo: Snapshot | null
+  done: { correct: number; wrong: number; sensePasses: number }
+}
+
+interface StudyState {
+  states: Map<number, SenseState>
+  settings: Settings
+  hydrated: boolean
+  runtime: Runtime
+  session: SessionRecord | null
+
+  hydrate: () => Promise<void>
   startSession: () => Promise<void>
-  nextWord: () => void
-  answerQuiz: (selectedIndex: number) => void
-  markUnsure: () => void
-  skipWord: () => void
-  setMode: (mode: TrainingMode) => void
-  endSession: () => Promise<void>
-  loadRecords: () => Promise<void>
-  getRecord: (wordId: number) => StudyRecord | undefined
+  _completeMode: (mode: DrillMode, correct: boolean, guessed?: boolean, picked?: number) => void
+  answerMeaningWord: (index: number) => void
+  answerSpelling: (text: string) => void
+  notSure: () => void
+  undo: () => void
+  proceed: () => void
+  finish: () => Promise<void>
+  quit: () => Promise<void>
+  togglePin: (id: number) => Promise<void>
+  archiveSense: (id: number, graduated?: boolean) => Promise<void>
+  updateSettings: (patch: Partial<Settings>) => Promise<void>
 }
 
-function createDefaultRecord(wordId: number): StudyRecord {
-  return {
-    wordId,
-    status: 'new',
-    masteryLevel: 0,
-    consecutiveCorrect: 0,
-    consecutiveWrong: 0,
-    totalCorrect: 0,
-    totalWrong: 0,
-    sessionWrong: 0,
-    sessionCorrect: 0,
-    lastCorrectAt: null,
-    lastWrongAt: null,
-    nextReviewAt: null,
-    pinned: false,
-    isInCurrentSession: false,
+const EMPTY: Runtime = {
+  state: 'idle', queue: [], current: null, modePos: 0,
+  passWrong: false, question: null, questionAt: null,
+  feedback: null, lastUndo: null,
+  done: { correct: 0, wrong: 0, sensePasses: 0 },
+}
+
+const dayStr = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function speak(kana: string) {
+  try {
+    if (!window.speechSynthesis) return
+    const u = new SpeechSynthesisUtterance(kana)
+    u.lang = 'ja-JP'
+    u.rate = 0.9
+    window.speechSynthesis.cancel()
+    window.speechSynthesis.speak(u)
+    window.speechSynthesis.resume()
+  } catch {
+    /* noop */
   }
 }
 
-function buildQuiz(word: WordEntry, mode: TrainingMode): QuizState {
-  const correctIndex = Math.floor(Math.random() * 4)
-  const options: string[] = ['', '', '', '']
-  
-  if (mode === 'select-meaning') {
-    // 选义：显示假名/汉字，选中文释义
-    const distractors = n5Words
-      .filter(w => w.id !== word.id && w.definition !== word.definition)
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 3)
-      .map(w => w.definition)
-    options[correctIndex] = word.definition
-    let di = 0
-    for (let i = 0; i < 4; i++) {
-      if (i !== correctIndex) options[i] = distractors[di++]
-    }
-  } else if (mode === 'select-word') {
-    // 选词：显示中文释义，选假名
-    const distractors = n5Words
-      .filter(w => w.id !== word.id && w.kana !== word.kana)
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 3)
-      .map(w => w.kana)
-    options[correctIndex] = word.kana
-    let di = 0
-    for (let i = 0; i < 4; i++) {
-      if (i !== correctIndex) options[i] = distractors[di++]
-    }
-  }
-
-  return {
-    word,
-    mode,
-    options,
-    correctIndex,
-    startTime: Date.now(),
-    attemptCount: 0,
-    isCorrect: null,
-    showAnswer: false,
-    showContext: false,
-  }
+/** Mode at a given position — listen is skipped (it is a pass-through step). */
+function modeAt(pos: number): DrillMode {
+  return DRILL_ORDER[Math.min(pos, DRILL_ORDER.length - 1)]
 }
 
-export const useStudyStore = create<StudyStore>((set, get) => ({
-  isActive: false,
-  currentIndex: 0,
-  currentMode: 'select-meaning',
-  modeOrder: ['listen', 'select-meaning', 'select-word', 'spelling'],
-  sessionWords: [],
-  sessionQueue: [],
-  completedWords: [],
-  wrongWords: [],
-  quiz: null,
-  records: new Map(),
+function buildQuestionFor(senseId: number, pos: number, mastery: number, useNoneMin: number): Question {
+  const mode = modeAt(pos)
+  if (mode === 'meaning') return buildOptions(senseId, 'meaning', mastery >= useNoneMin)
+  if (mode === 'word') return buildOptions(senseId, 'kana', mastery >= useNoneMin)
+  return { options: [], correct: -1 }
+}
 
-  loadRecords: async () => {
-    const recordsData = await db.records.toArray()
-    const map = new Map<number, StudyRecord>()
-    for (const r of recordsData) {
-      map.set(r.wordId, r)
+function persist(rec: SenseState) {
+  void db.states.put(rec)
+}
+
+export const useStudyStore = create<StudyState>((set, get) => ({
+  states: new Map(),
+  settings: DEFAULT_SETTINGS,
+  hydrated: false,
+  runtime: EMPTY,
+  session: null,
+
+  hydrate: async () => {
+    if (get().hydrated) return
+    const [rows, settingsRows] = await Promise.all([
+      db.states.toArray(),
+      db.settings.toArray(),
+    ])
+    const states = new Map<number, SenseState>()
+    for (const r of rows) states.set(r.senseId, r)
+    if (states.size === 0) {
+      for (const w of WORDS) states.set(w.id, freshState(w.id))
+      await db.states.bulkPut([...states.values()])
     }
-    set({ records: map })
-  },
-
-  getRecord: (wordId: number) => {
-    return get().records.get(wordId)
+    const settings: Settings =
+      settingsRows.length > 0 ? { ...DEFAULT_SETTINGS, ...settingsRows[0] } : DEFAULT_SETTINGS
+    set({ states, settings, hydrated: true })
   },
 
   startSession: async () => {
-    await get().loadRecords()
-    const records = get().records
-    
-    // Get new words that don't have records yet
-    const allRecordIds = new Set(records.keys())
-    const newWords = n5Words.filter(w => !allRecordIds.has(w.id)).slice(0, 10)
-    
-    // Get review due words
+    await get().hydrate()
+    const { states, settings } = get()
+    const queue = buildSessionQueue(states, settings.dailyNewWords)
+    if (queue.length === 0) return
+
     const now = Date.now()
-    const reviewWords = n5Words.filter(w => {
-      const rec = records.get(w.id)
-      return rec && rec.nextReviewAt && rec.nextReviewAt <= now
-    }).slice(0, 10)
-    
-    const sessionWords = [...newWords, ...reviewWords].sort(() => Math.random() - 0.5)
-    
-    // Create records for new words
-    for (const w of newWords) {
-      const rec = createDefaultRecord(w.id)
-      records.set(w.id, rec)
-      await db.records.put(rec)
+    const session: SessionRecord = {
+      id: `s-${now}`,
+      date: dayStr(),
+      startedAt: now,
+      finishedAt: null,
+      checkedIn: false,
+      newSenses: Math.min(settings.dailyNewWords, queue.length),
+      reviewedSenses: queue.length - Math.min(settings.dailyNewWords, queue.length),
+      correct: 0,
+      wrong: 0,
+      durationMs: 0,
+    }
+    await db.sessions.put(session)
+
+    const first = queue[0]
+    const rec = states.get(first)!
+    const question = buildQuestionFor(first, 0, rec.mastery, settings.noneOptionMinMastery)
+    if (settings.autoPronounce) {
+      const w = WORDS_BY_ID.get(first)
+      if (w) setTimeout(() => speak(w.kana), 300)
     }
 
     set({
-      isActive: true,
-      sessionWords,
-      sessionQueue: [...sessionWords],
-      currentIndex: 0,
-      completedWords: [],
-      wrongWords: [],
-      currentMode: 'select-meaning',
+      session,
+      runtime: {
+        ...EMPTY,
+        state: 'drill',
+        queue: [...queue],
+        current: first,
+        modePos: 0,
+        question,
+        questionAt: Date.now(),
+      },
     })
-    
-    get().nextWord()
   },
 
-  nextWord: () => {
-    const state = get()
-    if (state.sessionQueue.length === 0) return
-    
-    const word = state.sessionQueue[0]
-    const newQueue = state.sessionQueue.slice(1)
-    
-    const quiz = buildQuiz(word, state.currentMode)
-    
+  _completeMode: (mode: DrillMode, correct: boolean, guessed = false, picked?: number) => {
+    const r = get().runtime
+    const cur = r.current
+    if (cur == null) return
+
+    const rec = get().states.get(cur)!
+    const effective = guessed ? false : correct
+    const updated = noteMode(rec, mode, effective)
+    const states = new Map(get().states).set(cur, updated)
+    const passWrong = r.passWrong || !effective
+    const lastUndo: Snapshot = {
+      recBefore: rec,
+      passWrongBefore: r.passWrong,
+      doneBefore: r.done,
+    }
+
     set({
-      sessionQueue: newQueue,
-      currentIndex: state.currentIndex,
-      quiz,
+      states,
+      runtime: {
+        ...r,
+        passWrong,
+        feedback: { correct: effective, guessed: guessed && correct, picked },
+        lastUndo,
+        questionAt: null,
+        done: {
+          correct: r.done.correct + (effective ? 1 : 0),
+          wrong: r.done.wrong + (effective ? 0 : 1),
+          sensePasses: r.done.sensePasses,
+        },
+      },
     })
+    persist(updated)
   },
 
-  answerQuiz: (selectedIndex: number) => {
-    const state = get()
-    if (!state.quiz) return
-    
-    const isCorrect = selectedIndex === state.quiz.correctIndex
-    const record = get().records.get(state.quiz.word.id) || createDefaultRecord(state.quiz.word.id)
-    
-    if (isCorrect) {
-      const updated: StudyRecord = {
-        ...record,
-        masteryLevel: Math.min(100, record.masteryLevel + 5),
-        consecutiveCorrect: record.consecutiveCorrect + 1,
-        consecutiveWrong: 0,
-        totalCorrect: record.totalCorrect + 1,
-        sessionCorrect: record.sessionCorrect + 1,
-        lastCorrectAt: Date.now(),
-        status: (record.masteryLevel + 5 >= 80 ? 'mastered' : 'learning') as StudyRecord['status'],
-      }
-      // Calculate next review
-      const dayMs = 24 * 60 * 60 * 1000
-      if (updated.consecutiveCorrect < 3) updated.nextReviewAt = Date.now() + dayMs
-      else if (updated.consecutiveCorrect < 5) updated.nextReviewAt = Date.now() + 7 * dayMs
-      else updated.nextReviewAt = Date.now() + 15 * dayMs
-      
-      get().records.set(state.quiz.word.id, updated)
-      db.records.put(updated)
-      
-      set({
-        quiz: { ...state.quiz, isCorrect: true, showAnswer: true },
-        completedWords: [...state.completedWords, state.quiz.word.id],
-      })
-    } else {
-      const updated: StudyRecord = {
-        ...record,
-        masteryLevel: Math.max(0, record.masteryLevel - 10),
-        consecutiveCorrect: 0,
-        consecutiveWrong: record.consecutiveWrong + 1,
-        totalWrong: record.totalWrong + 1,
-        sessionWrong: record.sessionWrong + 1,
-        lastWrongAt: Date.now(),
-        status: 'learning',
-        isInCurrentSession: true,
-      }
-      
-      get().records.set(state.quiz.word.id, updated)
-      db.records.put(updated)
-      
-      set({
-        quiz: { ...state.quiz, isCorrect: false, showAnswer: true },
-        wrongWords: [...state.wrongWords, state.quiz.word.id],
-      })
-      
-      // Wrong word goes back to queue
-      setTimeout(() => {
-        get().nextWord()
-      }, 1500)
+  answerMeaningWord: (index: number) => {
+    const r = get().runtime
+    if (r.feedback || r.question == null || r.current == null) return
+    const mode: DrillMode = modeAt(r.modePos)
+    if (mode !== 'meaning' && mode !== 'word') return
+    const isCorrect = index === r.question.correct
+    let guessed = false
+    if (isCorrect && get().settings.guessAsWrong && r.questionAt != null) {
+      guessed = Date.now() - r.questionAt < 1200
+    }
+    get()._completeMode(mode, isCorrect, guessed, index)
+  },
+
+  answerSpelling: (text: string) => {
+    const r = get().runtime
+    if (r.feedback || r.current == null) return
+    if (modeAt(r.modePos) !== 'spell') return
+    const w = WORDS_BY_ID.get(r.current)!
+    let { correct } = gradeSpelling(text, w.kana, get().settings.strictSpelling)
+    let guessed = false
+    if (correct && get().settings.guessAsWrong && r.questionAt != null && Date.now() - r.questionAt < 1200) {
+      guessed = true
+    }
+    get()._completeMode('spell', correct, guessed)
+  },
+
+  notSure: () => {
+    const r = get().runtime
+    if (r.feedback || r.current == null) return
+    const mode: DrillMode = modeAt(r.modePos)
+    if (mode === 'listen') return
+    get()._completeMode(mode, false)
+  },
+
+  undo: () => {
+    const r = get().runtime
+    if (!r.feedback || !r.lastUndo || r.current == null) return
+    const { recBefore, passWrongBefore, doneBefore } = r.lastUndo
+    const cur = r.current
+    const states = new Map(get().states).set(cur, recBefore)
+    set({
+      states,
+      runtime: {
+        ...r,
+        passWrong: passWrongBefore,
+        done: doneBefore,
+        feedback: null,
+        lastUndo: null,
+        questionAt: Date.now(),
+      },
+    })
+    persist(recBefore)
+  },
+
+  proceed: () => {
+    const r = get().runtime
+    if (r.state !== 'drill' || r.current == null) return
+    // Listen mode advances without an answer
+    if (!r.feedback && modeAt(r.modePos) === 'listen') {
+      const nextPos = 1
+      const cur = r.current
+      const rec = get().states.get(cur)!
+      const question = buildQuestionFor(cur, nextPos, rec.mastery, get().settings.noneOptionMinMastery)
+      set({ runtime: { ...r, modePos: nextPos, feedback: null, lastUndo: null, question, questionAt: Date.now() } })
       return
     }
+    if (!r.feedback) return
+    const cur = r.current
+    const rec = get().states.get(cur)!
+
+    const isLastMode = r.modePos === DRILL_ORDER.length - 1
+    if (!isLastMode) {
+      const nextPos = r.modePos + 1
+      const question = buildQuestionFor(cur, nextPos, rec.mastery, get().settings.noneOptionMinMastery)
+      set({
+        runtime: {
+          ...r,
+          modePos: nextPos,
+          feedback: null,
+          lastUndo: null,
+          question,
+          questionAt: Date.now(),
+        },
+      })
+      if (get().settings.autoPronounce) {
+        const w = WORDS_BY_ID.get(cur)
+        if (w && modeAt(nextPos) === 'listen') speak(w.kana)
+      }
+      return
+    }
+
+    // ===== pass finished =====
+    let nextRec: SenseState
+    let queue = [...r.queue]
+    const done = { ...r.done, sensePasses: r.done.sensePasses + 1 }
+
+    if (!r.passWrong) {
+      nextRec = advanceLadder(rec)
+    } else {
+      nextRec = resetLadder(rec)
+      queue.push(cur)  // short-term repetition
+    }
+
+    const states = new Map(get().states).set(cur, nextRec)
+    void db.states.put(nextRec)
+
+    const next = queue.shift() ?? null
+    const session = get().session
+    if (session) {
+      session.correct = done.correct
+      session.wrong = done.wrong
+    }
+
+    if (next === null) {
+      const finished: SessionRecord = session
+        ? { ...session, finishedAt: Date.now(), durationMs: Date.now() - session.startedAt, checkedIn: true }
+        : session!
+      if (finished) void db.sessions.put(finished)
+      set({ states, session: finished, runtime: { ...EMPTY, state: 'summary', done } })
+      return
+    }
+
+    const nextRecState = get().states.get(next)!
+    const question = buildQuestionFor(next, 0, nextRecState.mastery, get().settings.noneOptionMinMastery)
+    set({
+      states,
+      session,
+      runtime: {
+        ...r,
+        queue,
+        current: next,
+        modePos: 0,
+        passWrong: false,
+        feedback: null,
+        lastUndo: null,
+        question,
+        questionAt: Date.now(),
+        done,
+      },
+    })
+    if (get().settings.autoPronounce) {
+      const w = WORDS_BY_ID.get(next)
+      if (w && modeAt(0) === 'listen') speak(w.kana)
+    }
   },
 
-  markUnsure: () => {
-    const state = get()
-    if (!state.quiz) return
-    // Treat as wrong
-    state.answerQuiz(-1)
+  finish: async () => {
+    await get().quit()
   },
 
-  skipWord: () => {
-    get().nextWord()
+  quit: async () => {
+    const s = get().session
+    if (s && s.finishedAt === null) {
+      const finished: SessionRecord = {
+        ...s,
+        finishedAt: Date.now(),
+        durationMs: Date.now() - s.startedAt,
+        checkedIn: false,
+      }
+      await db.sessions.put(finished)
+      set({ session: finished })
+    }
+    set({ runtime: { ...EMPTY } })
   },
 
-  setMode: (mode: TrainingMode) => {
-    set({ currentMode: mode })
+  togglePin: async (id: number) => {
+    const rec = get().states.get(id)
+    if (!rec) return
+    const next = { ...rec, pinned: !rec.pinned }
+    await db.states.put(next)
+    set({ states: new Map(get().states).set(id, next) })
   },
 
-  endSession: async () => {
-    set({ isActive: false, quiz: null })
+  archiveSense: async (id: number, graduated = false) => {
+    const rec = get().states.get(id)
+    if (!rec) return
+    const next: SenseState = {
+      ...rec,
+      status: 'archived',
+      ladderStep: REVIEW_LADDER.length,
+      mastery: graduated ? 100 : rec.mastery,
+      dueAt: null,
+    }
+    await db.states.put(next)
+    set({ states: new Map(get().states).set(id, next) })
+  },
+
+  updateSettings: async (patch) => {
+    const settings = { ...get().settings, ...patch }
+    await db.settings.clear()
+    await db.settings.put(settings)
+    set({ settings })
   },
 }))
+
+export { speak }

@@ -1,126 +1,200 @@
-import type { StudyRecord } from '../types'
+import type { DrillMode, SenseState } from '../types'
+import { WORDS, WORDS_BY_ID } from '../data/words'
 
 /**
- * 复习调度算法 — 基于艾宾浩斯遗忘曲线的间隔重复
- * 
- * 短期复习: 当前session答错 -> 在当前轮次重复，直到连续答对3次
- * 长期复习: 7天 / 15天 / 30天遗忘点
+ * Review scheduling — a local-only port of Towords' strategy.
+ *
+ * HOW A SESSION WORKS
+ *   A session holds a queue of senses. Each sense is drilled through the full
+ *   mode chain (listen → meaning → word → spelling) — we call that one *pass*.
+ *
+ *   · a pass with zero mistakes graduates the sense one rung up the ladder
+ *   · a pass with any mistake resets the ladder and re-queues the sense
+ *     at the back of the queue for another pass (short-term repetition)
+ *
+ * THE LADDER (Ebbinghaus forgetting curve)
+ *   1 day → 7 days → 15 days → 30 days → archived (never shown again)
+ *
+ * A sense is only put back into a future session once its `dueAt` arrives.
  */
 
-// 长期复习间隔（天）
-export const REVIEW_INTERVALS = [7, 15, 30]
+export const REVIEW_LADDER = [1, 7, 15, 30]
 
-/**
- * 判断一个词今天是否需要复习
- */
-export function isWordDueForReview(record: StudyRecord, _today: string): boolean {
-  // 短期复习：当前session中有错
-  if (record.isInCurrentSession && record.sessionWrong > 0) return true
-  // 长期复习：到达遗忘点
-  if (record.nextReviewAt && record.nextReviewAt <= Date.now()) return true
-  return false
-}
+const DAY = 24 * 60 * 60 * 1000
 
-/**
- * 答对后更新复习计划
- */
-export function updateOnCorrect(
-  record: StudyRecord,
-  _allRecords: Map<number, StudyRecord>
-): StudyRecord {
-  const now = Date.now()
+export function freshState(senseId: number): SenseState {
   return {
-    ...record,
-    masteryLevel: Math.min(100, record.masteryLevel + 5),
-    consecutiveCorrect: record.consecutiveCorrect + 1,
-    consecutiveWrong: 0,
-    totalCorrect: record.totalCorrect + 1,
-    sessionCorrect: record.sessionCorrect + 1,
-    lastCorrectAt: now,
-    status: record.masteryLevel + 5 >= 80 ? 'mastered' : 'learning',
-    // 答对后更新下一复习时间
-    nextReviewAt: getNextReviewDate(record.consecutiveCorrect + 1, now),
+    senseId,
+    status: 'new',
+    mastery: 0,
+    streak: 0,
+    totalCorrect: 0,
+    totalWrong: 0,
+    lastSeenAt: null,
+    lastWrongAt: null,
+    dueAt: null,
+    ladderStep: 0,
+    pinned: false,
+    modeStats: {
+      listen: { correct: 0, wrong: 0 },
+      meaning: { correct: 0, wrong: 0 },
+      word: { correct: 0, wrong: 0 },
+      spell: { correct: 0, wrong: 0 },
+    },
   }
 }
 
-/**
- * 答错后更新复习计划
- */
-export function updateOnWrong(
-  record: StudyRecord,
-  _allRecords: Map<number, StudyRecord>
-): StudyRecord {
-  const now = Date.now()
+/** Mastery shown to the user, derived from ladder progress. */
+function masteryFor(ladderStep: number, clean: boolean): number {
+  const base = Math.round((ladderStep / REVIEW_LADDER.length) * 100)
+  return Math.max(0, Math.min(100, clean ? base : base - 10))
+}
+
+export function isDue(rec: SenseState, now: number = Date.now()): boolean {
+  if (rec.status === 'archived') return false
+  if (rec.status === 'new') return true
+  return rec.dueAt !== null && rec.dueAt <= now
+}
+
+/** Update the per-mode hit counters. */
+export function noteMode(rec: SenseState, mode: DrillMode, correct: boolean): SenseState {
+  const cur = rec.modeStats[mode]
   return {
-    ...record,
-    masteryLevel: Math.max(0, record.masteryLevel - 10),
-    consecutiveCorrect: 0,
-    consecutiveWrong: record.consecutiveWrong + 1,
-    totalWrong: record.totalWrong + 1,
-    sessionWrong: record.sessionWrong + 1,
-    lastWrongAt: now,
+    ...rec,
+    modeStats: {
+      ...rec.modeStats,
+      [mode]: correct
+        ? { correct: cur.correct + 1, wrong: cur.wrong }
+        : { correct: cur.correct, wrong: cur.wrong + 1 },
+    },
+  }
+}
+
+/** A pass finished with no mistakes → climb the ladder. */
+export function advanceLadder(rec: SenseState): SenseState {
+  const step = rec.ladderStep + 1
+  const now = Date.now()
+  if (step >= REVIEW_LADDER.length) {
+    return {
+      ...rec,
+      ladderStep: step,
+      status: 'archived',
+      mastery: 100,
+      streak: 0,
+      dueAt: null,
+      lastSeenAt: now,
+      totalCorrect: rec.totalCorrect + 1,
+    }
+  }
+  return {
+    ...rec,
+    ladderStep: step,
     status: 'learning',
-    // 答错后重置短期复习：立即在当前session中重复
-    isInCurrentSession: true,
-    // 短期复习：下次立刻出现
-    nextReviewAt: null,
+    mastery: masteryFor(step, true),
+    streak: 0,
+    dueAt: now + REVIEW_LADDER[step] * DAY,
+    lastSeenAt: now,
+    totalCorrect: rec.totalCorrect + 1,
   }
 }
 
-/**
- * 猜对/不确定 —— 等同于答错
- */
-export const updateOnUnsure = updateOnWrong
-
-/**
- * 获取下一个复习日期（基于连续答对次数）
- * 连续答对次数越高，间隔越长
- */
-function getNextReviewDate(consecutiveCorrect: number, now: number): number {
-  const dayMs = 24 * 60 * 60 * 1000
-  if (consecutiveCorrect < 3) return now + dayMs           // 1天后
-  if (consecutiveCorrect < 5) return now + 7 * dayMs       // 7天
-  if (consecutiveCorrect < 8) return now + 15 * dayMs      // 15天
-  return now + 30 * dayMs                                   // 30天
-}
-
-/**
- * session结束后: 重置session状态
- */
-export function endSession(record: StudyRecord): StudyRecord {
-  return {
-    ...record,
-    isInCurrentSession: false,
-    sessionWrong: 0,
-    sessionCorrect: 0,
-  }
-}
-
-/**
- * 生成今日的复习队列
- */
-export function buildTodayReviewQueue(
-  records: StudyRecord[],
-  _today: string,
-  dailyNewWords: number
-): { newWords: StudyRecord[]; reviewWords: StudyRecord[]; overdueWords: StudyRecord[] } {
-  const newWords: StudyRecord[] = []
-  const reviewWords: StudyRecord[] = []
-  const overdueWords: StudyRecord[] = []
+/** A pass finished with mistakes → drop back to the bottom of the ladder. */
+export function resetLadder(rec: SenseState): SenseState {
   const now = Date.now()
+  return {
+    ...rec,
+    ladderStep: 0,
+    status: 'learning',
+    mastery: masteryFor(0, false),
+    streak: 0,
+    dueAt: null,                 // due again as soon as this session ends
+    lastSeenAt: now,
+    lastWrongAt: now,
+    totalWrong: rec.totalWrong + 1,
+  }
+}
 
-  for (const r of records) {
-    if (r.status === 'filtered') continue
-    if (r.status === 'new') {
-      if (newWords.length < dailyNewWords) newWords.push(r)
-    } else if (r.nextReviewAt && r.nextReviewAt <= now) {
-      if (r.nextReviewAt < now - 2 * 24 * 60 * 60 * 1000) {
-        overdueWords.push(r)
-      } else {
-        reviewWords.push(r)
-      }
+/**
+ * Build the queue for a fresh session:
+ * `newCount` unseen senses, then every sense whose review is due.
+ */
+export function buildSessionQueue(
+  states: Map<number, SenseState>,
+  newCount: number,
+  now: number = Date.now(),
+): number[] {
+  const fresh: number[] = []
+  const due: number[] = []
+
+  for (const rec of states.values()) {
+    if (rec.status === 'archived') continue
+    if (rec.status === 'new') {
+      if (fresh.length < newCount) fresh.push(rec.senseId)
+    } else if (isDue(rec, now)) {
+      due.push(rec.senseId)
     }
   }
 
-  return { newWords, reviewWords, overdueWords }
+  // pinned senses always jump the queue
+  const pinned = [...states.values()]
+    .filter(r => r.pinned && r.status !== 'archived')
+    .map(r => r.senseId)
+
+  const seen = new Set<number>()
+  const out: number[] = []
+  for (const id of [...pinned, ...fresh, ...due]) {
+    if (!seen.has(id)) {
+      seen.add(id)
+      out.push(id)
+    }
+  }
+  return shuffle(out)
+}
+
+/** Fisher–Yates shuffle. */
+export function shuffle<T>(arr: readonly T[]): T[] {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
+export interface Question {
+  options: string[]
+  correct: number
+}
+
+/**
+ * Build the four choices for a multiple-choice drill.
+ * The 4th option becomes "None of the above" once a sense is well known,
+ * which is Towords' difficulty ratchet.
+ */
+export function buildOptions(
+  senseId: number,
+  field: 'meaning' | 'kana',
+  useNoneOption: boolean,
+): Question {
+  const target = WORDS_BY_ID.get(senseId)
+  if (!target) return { options: [], correct: -1 }
+
+  const answer = field === 'meaning' ? target.meaning : target.kana
+  const distractors = shuffle(
+    WORDS.filter(w => w.id !== senseId && (field === 'meaning' ? w.meaning !== answer : w.kana !== answer)),
+  )
+    .slice(0, 3)
+    .map(w => (field === 'meaning' ? w.meaning : w.kana))
+
+  const slots: string[] = [...distractors]
+  if (useNoneOption) slots.push('None of the above')
+
+  const correct = Math.floor(Math.random() * 4)
+  const options: string[] = new Array(4).fill('')
+  let di = 0
+  for (let i = 0; i < 4; i++) {
+    if (i === correct) options[i] = answer
+    else options[i] = slots[di++] ?? '—'
+  }
+  return { options, correct }
 }

@@ -1,56 +1,38 @@
 import { useEffect, useRef, useState } from 'react'
+import ProgressRing from './ProgressRing'
 
-interface CountdownTimerProps {
+interface P {
   seconds: number
   onExpire: () => void
   running: boolean
   key?: string | number
 }
+export default function CountdownTimer({ seconds, onExpire, running, key }: P) {
+  const [left, setLeft] = useState(seconds)
+  const called = useRef(false)
 
-export default function CountdownTimer({ seconds, onExpire, running, key }: CountdownTimerProps) {
-  const [remaining, setRemaining] = useState(seconds)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const calledRef = useRef(false)
-
-  useEffect(() => {
-    setRemaining(seconds)
-    calledRef.current = false
-  }, [seconds, key])
+  useEffect(() => { setLeft(seconds); called.current = false }, [seconds, key])
 
   useEffect(() => {
-    if (!running) {
-      if (intervalRef.current) clearInterval(intervalRef.current)
-      return
-    }
-    intervalRef.current = setInterval(() => {
-      setRemaining((prev) => {
-        if (prev <= 1) {
-          if (intervalRef.current) clearInterval(intervalRef.current)
-          if (!calledRef.current) {
-            calledRef.current = true
-            onExpire()
-          }
+    if (!running) return
+    const iv = setInterval(() => {
+      setLeft(p => {
+        if (p <= 1) {
+          clearInterval(iv)
+          if (!called.current) { called.current = true; onExpire() }
           return 0
         }
-        return prev - 1
+        return p - 1
       })
     }, 1000)
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
-    }
+    return () => clearInterval(iv)
   }, [running, onExpire, key])
 
-  const pct = (remaining / seconds) * 100
-  const color = remaining > 3 ? 'bg-green-500' : remaining > 1 ? 'bg-amber-500' : 'bg-red-500'
-
+  const pct = seconds > 0 ? Math.round((left / seconds) * 100) : 0
+  const color = left > seconds * 0.5 ? '#4EBF6D' : left > 3 ? '#F5A623' : '#FF5252'
   return (
-    <div className="flex items-center gap-2">
-      <div className="w-16 h-2 bg-gray-200 rounded-full overflow-hidden">
-        <div className={`h-full ${color} transition-all duration-1000`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className={`text-sm font-mono font-bold ${remaining <= 3 ? 'text-red-500' : 'text-gray-500'}`}>
-        {remaining}s
-      </span>
-    </div>
+    <ProgressRing progress={pct} size={44} stroke={4} color={color} trackColor="#F0F1F2">
+      <span className={`text-[13px] font-bold tabular-nums ${left <= 3 ? 'text-[#FF5252]' : 'text-gray-700'}`}>{left}</span>
+    </ProgressRing>
   )
 }

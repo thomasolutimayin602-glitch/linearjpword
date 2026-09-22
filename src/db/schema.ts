@@ -1,22 +1,24 @@
 import Dexie, { type Table } from 'dexie'
-import type { WordEntry, StudyRecord, StudySession } from '../types'
+import type { SenseState, SessionRecord, Settings } from '../types'
 
 class TowordJpDB extends Dexie {
-  words!: Table<WordEntry, number>
-  records!: Table<StudyRecord, number>
-  sessions!: Table<StudySession, string>
-  settings!: Table<{ key: string; value: unknown }, string>
+  states!: Table<SenseState, number>       // per-sense learning state
+  sessions!: Table<SessionRecord, string>  // daily session logs
+  settings!: Table<Settings, number>       // single row
 
   constructor() {
-    super('toword-jp')
+    super('toword-jp-v2')
     this.version(1).stores({
-      words: 'id, jlptLevel, kana, tags',
-      records: 'wordId, status, masteryLevel, nextReviewAt, pinned',
+      states: 'senseId, status, mastery, dueAt, pinned, ladderStep',
       sessions: 'id, date, checkedIn',
-      settings: 'key',
+      settings: '++id',
     })
   }
 }
 
 export const db = new TowordJpDB()
-export type { Table }
+
+export async function initDb(): Promise<void> {
+  await db.settings.toCollection().delete()
+  // seeding happens in the store when states table is empty
+}

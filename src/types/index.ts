@@ -1,91 +1,101 @@
-// ===== 日语单词核心类型 =====
+// ===== Core domain types (mirrors Towords' data model) =====
 
-export type JlptLevel = 'N5' | 'N4' | 'N3' | 'N2' | 'N1'
-
-export type WordClass = 'noun' | 'verb' | 'adj-i' | 'adj-na' | 'adv' | 'part' | 'expr'
+export type JLPTLevel = 'N5' | 'N4' | 'N3' | 'N2' | 'N1'
 
 export interface Example {
-  japanese: string
-  chinese: string
+  ja: string
+  en: string
 }
 
-export interface WordEntry {
+/** A single word *sense* (one meaning). Towords studies one sense at a time. */
+export interface WordSense {
   id: number
-  kanji: string        // 汉字表记（可为空）
-  kana: string         // 平假名读音（核心字段）
-  accent: string       // 音调核，如 "[0]", "[1]"
-  definition: string   // 中文释义
+  word: string          // 漢字表記 (may equal kana when no kanji)
+  kana: string          // かな reading
+  romaji: string        // rōmaji reading
+  accent: string        // pitch accent, e.g. "[1]"
+  meaning: string       // English definition
+  pos: string           // part of speech
   examples: Example[]
-  jlptLevel: JlptLevel
-  wordClass: WordClass
+  level: JLPTLevel
   tags: string[]
-  difficulty: number   // 1-5
 }
 
-// ===== 学习记录 =====
-
-export type WordStatus = 'new' | 'learning' | 'mastered' | 'filtered'
-
-export interface StudyRecord {
-  wordId: number
-  status: WordStatus
-  masteryLevel: number      // 0-100
-  consecutiveCorrect: number
-  consecutiveWrong: number
+/** Per-sense learning state, stored locally. */
+export interface SenseState {
+  senseId: number
+  /** new = never studied, learning = in rotation, mastered = filtered out */
+  status: 'new' | 'learning' | 'mastered' | 'archived'
+  /** 0..100 mastery score */
+  mastery: number
+  streak: number            // consecutive correct
   totalCorrect: number
   totalWrong: number
-  sessionWrong: number      // 当前session答错
-  sessionCorrect: number    // 当前session答对
-  lastCorrectAt: number | null    // timestamp
+  lastSeenAt: number | null
   lastWrongAt: number | null
-  nextReviewAt: number | null     // 下一个遗忘点(7d/15d/30d)
+  /** epoch ms when this sense next becomes due for long-term review */
+  dueAt: number | null
+  /** index into REVIEW_LADDER */
+  ladderStep: number
   pinned: boolean
-  isInCurrentSession: boolean
+  /** per-mode history: how the user has done on each drill */
+  modeStats: Record<DrillMode, { correct: number; wrong: number }>
 }
 
-// ===== 训练模式 =====
+export type DrillMode = 'listen' | 'meaning' | 'word' | 'spell'
 
-export type TrainingMode = 'listen' | 'select-meaning' | 'select-word' | 'spelling'
+export const DRILL_ORDER: DrillMode[] = ['listen', 'meaning', 'word', 'spell']
 
-export interface StudySession {
+export const DRILL_LABEL: Record<DrillMode, string> = {
+  listen: 'Listening',
+  meaning: 'Meaning',
+  word: 'Word',
+  spell: 'Spelling',
+}
+
+/** A word presented during a session, with its generated question set. */
+export interface QueueItem {
+  senseId: number
+  mode: DrillMode
+  /** retry = re-queued after a mistake */
+  retry: boolean
+}
+
+export interface SessionRecord {
   id: string
-  date: string
-  newWordsCount: number
-  reviewWordsCount: number
-  wordsLearned: number[]
-  wordsMastered: number[]
-  wordsWrong: number[]
+  date: string           // YYYY-MM-DD
+  startedAt: number
+  finishedAt: number | null
   checkedIn: boolean
-  studyDuration: number
+  newSenses: number
+  reviewedSenses: number
+  correct: number
+  wrong: number
+  durationMs: number
 }
 
-// ===== 当前训练状态 =====
-
-export interface QuizState {
-  word: WordEntry
-  mode: TrainingMode
-  options: string[]          // 选择题的选项
-  correctIndex: number       // 正确选项索引
-  startTime: number
-  attemptCount: number       // 当前词尝试次数
-  isCorrect: boolean | null
-  showAnswer: boolean
-  showContext: boolean       // 是否展示释义
-}
-
-// ===== 设置 =====
-
-export interface AppSettings {
+export interface Settings {
   dailyNewWords: number
-  selectMeaningTimer: number  // 秒
-  selectWordTimer: number
+  meaningTimer: number     // seconds
+  wordTimer: number
   autoPronounce: boolean
-  definitionPronounce: boolean
-  hideChinese: boolean
-  guessAsWrong: boolean
-  noneOptionThreshold: number // 0-100 掌握度阈值
-  reviewReminder: string      // HH:mm
-  reviewDays: number[]        // [7, 15, 30]
-  voiceSpeed: number
-  accentStrictness: 'easy' | 'normal' | 'strict'
+  showRomaji: boolean
+  guessAsWrong: boolean     // "猜对算答错"
+  noneOptionMinMastery: number  // mastery at which the 4th option becomes "None of the above"
+  strictSpelling: boolean    // require ー / small kana exactly
+  dailyGoalMinutes: number
+  soundEffects: boolean
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  dailyNewWords: 12,
+  meaningTimer: 8,
+  wordTimer: 10,
+  autoPronounce: true,
+  showRomaji: true,
+  guessAsWrong: true,
+  noneOptionMinMastery: 60,
+  strictSpelling: false,
+  dailyGoalMinutes: 15,
+  soundEffects: true,
 }

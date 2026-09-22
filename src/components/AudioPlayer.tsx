@@ -1,60 +1,40 @@
-import { useState, useCallback } from 'react'
+import { useState } from 'react'
+import { IconSound } from './icons'
 
-interface AudioPlayerProps {
-  text: string      // 要朗读的文本
-  lang?: string     // 'ja-JP' | 'zh-CN'
-  onPlayingChange?: (playing: boolean) => void
+interface P {
+  text: string
+  lang?: string
+  size?: number
+  rate?: number
 }
-
-export default function AudioPlayer({ text, lang = 'ja-JP', onPlayingChange }: AudioPlayerProps) {
-  const [playing, setPlaying] = useState(false)
-  const [error, setError] = useState(false)
-
-  const speak = useCallback(() => {
-    if (!text || !window.speechSynthesis) return
-    window.speechSynthesis.cancel()
-    const utter = new SpeechSynthesisUtterance(text)
-    utter.lang = lang
-    utter.rate = 0.9
-    utter.onstart = () => {
-      setPlaying(true)
-      setError(false)
-      onPlayingChange?.(true)
-    }
-    utter.onend = () => {
-      setPlaying(false)
-      onPlayingChange?.(false)
-    }
-    utter.onerror = () => {
-      setError(true)
-      setPlaying(false)
-      onPlayingChange?.(false)
-    }
-    window.speechSynthesis.speak(utter)
-  }, [text, lang, onPlayingChange])
-
-  if (!window.speechSynthesis) {
-    return (
-      <button className="p-2 rounded-full bg-gray-100 text-gray-400 cursor-not-allowed" title="浏览器不支持语音合成">
-        🔊
-      </button>
-    )
+export default function AudioPlayer({ text, lang = 'ja-JP', size = 52, rate = 0.9 }: P) {
+  const [on, setOn] = useState(false)
+  const play = () => {
+    try {
+      const sy = window.speechSynthesis
+      if (!sy) return
+      sy.cancel()
+      const u = new SpeechSynthesisUtterance(text)
+      u.lang = lang
+      u.rate = rate
+      setOn(true)
+      u.onend = () => setOn(false)
+      u.onerror = () => setOn(false)
+      sy.speak(u)
+      sy.resume()
+    } catch { setOn(false) }
   }
-
   return (
     <button
-      onClick={speak}
-      disabled={playing}
-      className={`p-3 rounded-full transition-all active:scale-95 ${
-        playing
-          ? 'bg-red-100 text-red-500 animate-pulse'
-          : error
-            ? 'bg-amber-50 text-amber-500'
-            : 'bg-red-50 text-red-500 hover:bg-red-100'
+      onClick={play}
+      aria-label="Play pronunciation"
+      className={`flex items-center justify-center rounded-full transition-all active:scale-90 ${
+        on ? 'bg-[#FF5252] text-white' : 'bg-[#FFF0F0] text-[#FF5252]'
       }`}
-      title="播放发音"
+      style={{ width: size, height: size }}
     >
-      <span className="text-xl">{playing ? '🔊' : '🔈'}</span>
+      <IconSound width={size * 0.5} height={size * 0.5} />
+      {on && <span className="absolute opacity-0" />}
     </button>
   )
 }
