@@ -13,15 +13,22 @@ export default function AudioPlayer({ text, lang = 'ja-JP', size = 52, rate = 0.
     try {
       const sy = window.speechSynthesis
       if (!sy) return
-      sy.cancel()
-      const u = new SpeechSynthesisUtterance(text)
-      u.lang = lang
-      u.rate = rate
-      setOn(true)
-      u.onend = () => setOn(false)
-      u.onerror = () => setOn(false)
-      sy.speak(u)
-      sy.resume()
+      const doSpeak = () => {
+        const u = new SpeechSynthesisUtterance(text)
+        u.lang = lang
+        u.rate = rate
+        setOn(true)
+        u.onend = () => setOn(false)
+        u.onerror = () => setOn(false)
+        sy.speak(u)
+        sy.resume()
+      }
+      if (sy.speaking || sy.pending) {
+        sy.cancel()
+        setTimeout(doSpeak, 80)
+      } else {
+        doSpeak()
+      }
     } catch { setOn(false) }
   }
   return (

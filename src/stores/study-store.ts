@@ -67,13 +67,21 @@ const dayStr = () => {
 
 function speak(kana: string) {
   try {
-    if (!window.speechSynthesis) return
-    const u = new SpeechSynthesisUtterance(kana)
-    u.lang = 'ja-JP'
-    u.rate = 0.9
-    window.speechSynthesis.cancel()
-    window.speechSynthesis.speak(u)
-    window.speechSynthesis.resume()
+    const sy = window.speechSynthesis
+    if (!sy) return
+    const doSpeak = () => {
+      const u = new SpeechSynthesisUtterance(kana)
+      u.lang = 'ja-JP'
+      u.rate = 0.9
+      sy.speak(u)
+      sy.resume()
+    }
+    if (sy.speaking || sy.pending) {
+      sy.cancel()
+      setTimeout(doSpeak, 80)
+    } else {
+      doSpeak()
+    }
   } catch {
     /* noop */
   }
