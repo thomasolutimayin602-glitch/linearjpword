@@ -151,10 +151,6 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     const first = queue[0]
     const rec = states.get(first)!
     const question = buildQuestionFor(first, 0, rec.mastery, settings.noneOptionMinMastery)
-    if (settings.autoPronounce) {
-      const w = WORDS_BY_ID.get(first)
-      if (w) setTimeout(() => speak(w.kana), 300)
-    }
 
     set({
       session,
@@ -288,10 +284,6 @@ export const useStudyStore = create<StudyState>((set, get) => ({
           questionAt: Date.now(),
         },
       })
-      if (get().settings.autoPronounce) {
-        const w = WORDS_BY_ID.get(cur)
-        if (w && modeAt(nextPos) === 'listen') speak(w.kana)
-      }
       return
     }
 
@@ -344,10 +336,6 @@ export const useStudyStore = create<StudyState>((set, get) => ({
         done,
       },
     })
-    if (get().settings.autoPronounce) {
-      const w = WORDS_BY_ID.get(next)
-      if (w && modeAt(0) === 'listen') speak(w.kana)
-    }
   },
 
   finish: async () => {
