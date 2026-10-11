@@ -152,6 +152,7 @@ export default function Home() {
       {/* quick actions */}
       <div className="grid grid-cols-3 gap-2.5 mt-4">
         <QuickCard icon={<IconBook width={22} height={22} />} label="Wrong Words" sub="错词本" onClick={() => nav('/wrong')} />
+        <QuickCard icon={<span className="text-[20px]">⌕</span>} label="查词" sub="搜索词义" onClick={() => nav('/search')} />
         <QuickCard icon={<IconTrophy width={22} height={22} />} label="Stats" sub="学习统计" onClick={() => nav('/stats')} />
         <QuickCard icon={<IconClock width={22} height={22} />} label="Settings" sub="功能设置" onClick={() => nav('/settings')} />
       </div>

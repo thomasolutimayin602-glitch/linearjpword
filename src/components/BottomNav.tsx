@@ -1,11 +1,11 @@
 import { NavLink } from 'react-router-dom'
-import { IconHome, IconBook, IconChart, IconGear } from './icons'
+import { IconHome, IconBook, IconTrophy, IconGear } from './icons'
 
 const tabs = [
-  { to: '/', label: 'Learn', icon: IconHome },
-  { to: '/wrong', label: 'Wrong Book', icon: IconBook },
-  { to: '/stats', label: 'Stats', icon: IconChart },
-  { to: '/settings', label: 'Settings', icon: IconGear },
+  { to: '/', label: '学习', icon: IconHome },
+  { to: '/reading', label: '阅读', icon: IconBook },
+  { to: '/community', label: '拓友', icon: IconTrophy },
+  { to: '/profile', label: '我的', icon: IconGear },
 ]
 
 export default function BottomNav() {
