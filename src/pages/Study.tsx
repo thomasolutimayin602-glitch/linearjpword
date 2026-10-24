@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStudyStore, speak } from '../stores/study-store'
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { WORDS_BY_ID } from '../data/words'
 import { DRILL_LABEL, DRILL_ORDER } from '../types'
 import type { SenseState } from '../types'
@@ -18,18 +18,25 @@ export default function Study() {
   const r = store.runtime
 
   const [input, setInput] = useState('')
-
+  const practiceStarted = useRef(false)
 
   useEffect(() => {
-    if (r.state === 'idle') {
-      if (location.state?.from !== 'wrong') nav('/', { replace: true })
+    if (r.state !== 'idle') return
+    const senseId = location.state?.senseId
+    if (location.state?.from === 'wrong' && typeof senseId === 'number' && !practiceStarted.current) {
+      practiceStarted.current = true
+      void store.startPractice(senseId).then(started => {
+        if (!started) nav('/wrong', { replace: true })
+      })
+      return
     }
-  }, [r.state, nav, location.state])
+    if (location.state?.from !== 'wrong') nav('/', { replace: true })
+  }, [r.state, nav, location.state, store])
 
   const w = r.current != null ? WORDS_BY_ID.get(r.current) : undefined
   const rec: SenseState | undefined = r.current != null ? store.states.get(r.current) : undefined
   const mode = DRILL_ORDER[Math.min(r.modePos, DRILL_ORDER.length - 1)]
-  const queueLen = r.queue.length + (r.current != null ? 1 : 0)
+  const queueLen = r.done.sensePasses + r.queue.length + (r.current != null ? 1 : 0)
 
   const isFeedback = r.feedback !== null
   const isListen = mode === 'listen'
@@ -58,6 +65,11 @@ export default function Study() {
     setInput('')
   }, [store])
 
+  const handleExit = useCallback(async () => {
+    await store.quit()
+    nav('/')
+  }, [nav, store])
+
   // Auto-pronounce on a fresh listen question
   const canSpeak = useMemo(() => isListen && !isFeedback, [isListen, isFeedback])
   useEffect(() => {
@@ -65,7 +77,7 @@ export default function Study() {
       const t = setTimeout(() => speak(w.kana), 200)
       return () => clearTimeout(t)
     }
-  }, [r.current, r.modePos, canSpeak, store.settings.autoPronounce])
+  }, [r.current, r.modePos, canSpeak, store.settings.autoPronounce, w])
 
   // Spelling input auto-focus
   useEffect(() => {
@@ -91,7 +103,7 @@ export default function Study() {
     <div className="anim-up">
       {/* ===== Header ===== */}
       <div className="flex items-center gap-3 mb-4">
-        <button onClick={() => nav('/')} aria-label="Back" className="w-9 h-9 flex items-center justify-center rounded-full bg-white text-gray-500 border border-gray-100 shadow-sm active:scale-90 transition-all">
+        <button onClick={handleExit} aria-label="Back" className="w-9 h-9 flex items-center justify-center rounded-full bg-white text-gray-500 border border-gray-100 shadow-sm active:scale-90 transition-all">
           <IconBack width={20} height={20} />
         </button>
         <div className="flex-1 min-w-0">
@@ -196,7 +208,7 @@ export default function Study() {
               </div>
               <div className="mt-1 w-[44px] text-right text-gray-200" aria-hidden />
             </div>
-            <div className="text-[12px] text-gray-500 mt-2 mb-3">Type the rōmaji</div>
+            <div className="text-[12px] text-gray-500 mt-2 mb-3">输入正确的假名读音</div>
 
             <div className={`rounded-2xl p-4 mb-3 ${isFeedback ? (fb?.correct ? 'bg-[#EAF8EF] border border-[#C8EACF]' : 'bg-[#FFF0F0] border border-[#FFD9D9]') : 'bg-gray-50 border border-gray-100'}`}>
               <input
@@ -205,23 +217,48 @@ export default function Study() {
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') handleSpellSubmit() }}
                 disabled={isFeedback}
-                placeholder="type romaji…"
+                placeholder="输入假名…"
                 autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false}
                 className="w-full text-center text-[30px] font-bold tracking-[0.08em] bg-transparent border-none outline-none text-gray-800 placeholder-gray-200 disabled:text-gray-500"
               />
               <SpellHint w={w} revealed={isFeedback} show={store.settings.showRomaji} />
             </div>
 
+            {!isFeedback && <KanaKeyboard value={input} onChange={setInput} />}
+
             {!isFeedback ? (
               <button
                 onClick={handleSpellSubmit}
                 disabled={!input.trim()}
-                className="btn-primary w-full py-4 text-[16px] font-bold"
+                className="btn-primary w-full py-4 text-[16px] font-bold mt-3"
               >
                 Check ✓
               </button>
             ) : (
               <FeedbackPanel w={w} fb={fb!} correctText={`${w.romaji} ・ ${w.kana}`} />
+            )}
+          </div>
+        )}
+
+        {/* ===== EXAMPLE (例句) ===== */}
+        {mode === 'example' && (
+          <div>
+            <div className="text-center mb-4">
+              <div className="text-[13px] text-gray-400 mb-2">Read the example sentence</div>
+              <div className="text-[25px] font-bold text-gray-900 leading-relaxed">{w.examples[0]?.ja ?? `${w.kana}。`}</div>
+              <div className="text-[14px] text-gray-500 mt-2">{w.examples[0]?.en ?? w.meaning}</div>
+              <div className="flex items-center justify-center gap-2 mt-3">
+                <AudioPlayer text={w.examples[0]?.ja ?? w.kana} size={36} />
+                <span className="text-[11px] text-gray-400">{w.meaning}</span>
+              </div>
+            </div>
+            {!isFeedback ? (
+              <div className="grid grid-cols-2 gap-2.5">
+                <button onClick={() => store.answerExample(false)} className="py-3.5 rounded-2xl border-2 border-[#FFD9D9] bg-[#FFF8F8] text-[#E53935] font-bold">还不熟</button>
+                <button onClick={() => store.answerExample(true)} className="py-3.5 rounded-2xl border-2 border-[#C8EACF] bg-[#F3FCF5] text-[#2C8A48] font-bold">记住了</button>
+              </div>
+            ) : (
+              <FeedbackPanel w={w} fb={fb!} correctText={w.examples[0]?.ja ?? w.meaning} />
             )}
           </div>
         )}
@@ -350,7 +387,32 @@ function SpellHint({ w, revealed, show }: { w: NonNullable<ReturnType<typeof WOR
   }
   if (!show) return null
   const hintLen = Math.max(1, Math.ceil(w.romaji.length / 3))
-  return <div className="text-center text-[12px] text-[#F5A623] mt-2">hint: {w.romaji.slice(0, hintLen)}…</div>
+  return <div className="text-center text-[12px] text-[#F5A623] mt-2">罗马字提示：{w.romaji.slice(0, hintLen)}…</div>
+}
+
+const KANA_PAGES = {
+  清音: ['あ', 'か', 'さ', 'た', 'な', 'は', 'ま', 'や', 'ら', 'わ', 'い', 'き', 'し', 'ち', 'に', 'ひ', 'み', 'り', 'う', 'く', 'す', 'つ', 'ぬ', 'ふ', 'む', 'ゆ', 'る', 'を', 'え', 'け', 'せ', 'て', 'ね', 'へ', 'め', 'れ', 'お', 'こ', 'そ', 'と', 'の', 'ほ', 'も', 'よ', 'ろ', 'ん'],
+  浊音: ['が', 'ぎ', 'ぐ', 'げ', 'ご', 'ざ', 'じ', 'ず', 'ぜ', 'ぞ', 'だ', 'ぢ', 'づ', 'で', 'ど', 'ば', 'び', 'ぶ', 'べ', 'ぼ', 'ぱ', 'ぴ', 'ぷ', 'ぺ', 'ぽ', 'ゔ', 'っ', 'ー'],
+  拗音: ['きゃ', 'きゅ', 'きょ', 'しゃ', 'しゅ', 'しょ', 'ちゃ', 'ちゅ', 'ちょ', 'にゃ', 'にゅ', 'にょ', 'ひゃ', 'ひゅ', 'ひょ', 'みゃ', 'みゅ', 'みょ', 'りゃ', 'りゅ', 'りょ', 'ぎゃ', 'ぎゅ', 'ぎょ', 'じゃ', 'じゅ', 'じょ', 'びゃ', 'びゅ', 'びょ', 'ぴゃ', 'ぴゅ', 'ぴょ'],
+} as const
+
+function KanaKeyboard({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [page, setPage] = useState<keyof typeof KANA_PAGES>('清音')
+  return (
+    <div className="rounded-2xl border border-gray-100 bg-gray-50 p-2.5">
+      <div className="flex gap-1.5 mb-2">
+        {(Object.keys(KANA_PAGES) as Array<keyof typeof KANA_PAGES>).map(name => (
+          <button key={name} onClick={() => setPage(name)} className={`flex-1 py-1.5 rounded-lg text-[11px] font-bold ${page === name ? 'bg-gray-800 text-white' : 'bg-white text-gray-400'}`}>{name}</button>
+        ))}
+        <button onClick={() => onChange(value.slice(0, -1))} className="px-3 rounded-lg bg-white text-gray-500 text-[13px]" aria-label="删除一个假名">⌫</button>
+      </div>
+      <div className={`grid gap-1 ${page === '清音' ? 'grid-cols-10' : 'grid-cols-7'}`}>
+        {KANA_PAGES[page].map(kana => (
+          <button key={kana} onClick={() => onChange(value + kana)} className="min-h-8 rounded-lg bg-white border border-gray-100 text-[14px] font-semibold text-gray-700 active:bg-[#FFF0F0] active:text-[#FF5252]">{kana}</button>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function Summary({ store, onDone }: { store: ReturnType<typeof useStudyStore.getState>; onDone: () => void }) {

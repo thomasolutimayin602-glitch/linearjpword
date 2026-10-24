@@ -4,11 +4,11 @@ import { WORDS, WORDS_BY_ID } from '../data/words'
 import type { DrillMode, SenseState, SessionRecord, Settings } from '../types'
 import { DEFAULT_SETTINGS, DRILL_ORDER } from '../types'
 import {
-  advanceLadder, buildOptions, buildSessionQueue, freshState,
+  advanceLadder, buildOptions, buildStudyPlan, freshState,
   noteMode, resetLadder, REVIEW_LADDER,
   type Question,
 } from '../engine/review-scheduler'
-import { gradeSpelling } from '../engine/romaji'
+import { gradeKana, gradeSpelling } from '../engine/romaji'
 
 export type RunningState = 'idle' | 'drill' | 'summary'
 
@@ -16,6 +16,7 @@ interface Snapshot {
   recBefore: SenseState
   passWrongBefore: boolean
   doneBefore: { correct: number; wrong: number; sensePasses: number }
+  sessionBefore: SessionRecord | null
 }
 
 interface Runtime {
@@ -39,10 +40,12 @@ interface StudyState {
   session: SessionRecord | null
 
   hydrate: () => Promise<void>
-  startSession: () => Promise<void>
+  startSession: () => Promise<boolean>
+  startPractice: (senseId: number) => Promise<boolean>
   _completeMode: (mode: DrillMode, correct: boolean, guessed?: boolean, picked?: number) => void
   answerMeaningWord: (index: number) => void
   answerSpelling: (text: string) => void
+  answerExample: (correct: boolean) => void
   notSure: () => void
   undo: () => void
   proceed: () => void
@@ -117,11 +120,19 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       db.settings.toArray(),
     ])
     const states = new Map<number, SenseState>()
-    for (const r of rows) states.set(r.senseId, r)
-    if (states.size === 0) {
-      for (const w of WORDS) states.set(w.id, freshState(w.id))
-      await db.states.bulkPut([...states.values()])
+    for (const r of rows) {
+      states.set(r.senseId, {
+        ...r,
+        modeStats: {
+          ...freshState(r.senseId).modeStats,
+          ...r.modeStats,
+        },
+      })
     }
+    for (const w of WORDS) {
+      if (!states.has(w.id)) states.set(w.id, freshState(w.id))
+    }
+    await db.states.bulkPut([...states.values()])
     const settings: Settings =
       settingsRows.length > 0 ? { ...DEFAULT_SETTINGS, ...settingsRows[0] } : DEFAULT_SETTINGS
     set({ states, settings, hydrated: true })
@@ -130,25 +141,30 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   startSession: async () => {
     await get().hydrate()
     const { states, settings } = get()
-    const queue = buildSessionQueue(states, settings.dailyNewWords)
-    if (queue.length === 0) return
+    const plan = buildStudyPlan(states, settings.dailyNewWords)
+    if (plan.total === 0) return false
+    const [first, ...queue] = plan.queue
 
     const now = Date.now()
+    const sessionIds = plan.queue
+    const newSenses = sessionIds.filter(id => states.get(id)?.status === 'new').length
     const session: SessionRecord = {
       id: `s-${now}`,
       date: dayStr(),
       startedAt: now,
       finishedAt: null,
       checkedIn: false,
-      newSenses: Math.min(settings.dailyNewWords, queue.length),
-      reviewedSenses: queue.length - Math.min(settings.dailyNewWords, queue.length),
+      newSenses,
+      reviewedSenses: sessionIds.length - newSenses,
       correct: 0,
       wrong: 0,
       durationMs: 0,
+      completedSenses: 0,
+      senseIds: sessionIds,
+      wrongSenseIds: [],
     }
     await db.sessions.put(session)
 
-    const first = queue[0]
     const rec = states.get(first)!
     const question = buildQuestionFor(first, 0, rec.mastery, settings.noneOptionMinMastery)
 
@@ -157,13 +173,49 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       runtime: {
         ...EMPTY,
         state: 'drill',
-        queue: [...queue],
+        queue,
         current: first,
         modePos: 0,
         question,
         questionAt: Date.now(),
       },
     })
+    return true
+  },
+
+  startPractice: async (senseId: number) => {
+    await get().hydrate()
+    const { states, settings } = get()
+    const rec = states.get(senseId)
+    if (!rec || rec.status === 'archived') return false
+    const now = Date.now()
+    const session: SessionRecord = {
+      id: `practice-${now}`,
+      date: dayStr(),
+      startedAt: now,
+      finishedAt: null,
+      checkedIn: false,
+      newSenses: rec.status === 'new' ? 1 : 0,
+      reviewedSenses: rec.status === 'new' ? 0 : 1,
+      correct: 0,
+      wrong: 0,
+      durationMs: 0,
+      completedSenses: 0,
+      senseIds: [senseId],
+      wrongSenseIds: [],
+    }
+    await db.sessions.put(session)
+    set({
+      session,
+      runtime: {
+        ...EMPTY,
+        state: 'drill',
+        current: senseId,
+        question: buildQuestionFor(senseId, 0, rec.mastery, settings.noneOptionMinMastery),
+        questionAt: now,
+      },
+    })
+    return true
   },
 
   _completeMode: (mode: DrillMode, correct: boolean, guessed = false, picked?: number) => {
@@ -180,10 +232,22 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       recBefore: rec,
       passWrongBefore: r.passWrong,
       doneBefore: r.done,
+      sessionBefore: get().session,
     }
+
+    const currentSession = get().session
+    const session = currentSession ? {
+      ...currentSession,
+      correct: currentSession.correct + (effective ? 1 : 0),
+      wrong: currentSession.wrong + (effective ? 0 : 1),
+      wrongSenseIds: effective
+        ? currentSession.wrongSenseIds
+        : [...new Set([...(currentSession.wrongSenseIds ?? []), cur])],
+    } : null
 
     set({
       states,
+      session,
       runtime: {
         ...r,
         passWrong,
@@ -198,6 +262,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       },
     })
     persist(updated)
+    if (session) void db.sessions.put(session)
   },
 
   answerMeaningWord: (index: number) => {
@@ -218,12 +283,20 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     if (r.feedback || r.current == null) return
     if (modeAt(r.modePos) !== 'spell') return
     const w = WORDS_BY_ID.get(r.current)!
-    let { correct } = gradeSpelling(text, w.kana, get().settings.strictSpelling)
+    const kanaGrade = gradeKana(text, w.kana, get().settings.strictSpelling)
+    const romajiGrade = gradeSpelling(text, w.kana, get().settings.strictSpelling)
+    const correct = kanaGrade.correct || romajiGrade.correct
     let guessed = false
     if (correct && get().settings.guessAsWrong && r.questionAt != null && Date.now() - r.questionAt < 1200) {
       guessed = true
     }
     get()._completeMode('spell', correct, guessed)
+  },
+
+  answerExample: (correct: boolean) => {
+    const r = get().runtime
+    if (r.feedback || r.current == null || modeAt(r.modePos) !== 'example') return
+    get()._completeMode('example', correct)
   },
 
   notSure: () => {
@@ -237,11 +310,12 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   undo: () => {
     const r = get().runtime
     if (!r.feedback || !r.lastUndo || r.current == null) return
-    const { recBefore, passWrongBefore, doneBefore } = r.lastUndo
+    const { recBefore, passWrongBefore, doneBefore, sessionBefore } = r.lastUndo
     const cur = r.current
     const states = new Map(get().states).set(cur, recBefore)
     set({
       states,
+      session: sessionBefore,
       runtime: {
         ...r,
         passWrong: passWrongBefore,
@@ -252,6 +326,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       },
     })
     persist(recBefore)
+    if (sessionBefore) void db.sessions.put(sessionBefore)
   },
 
   proceed: () => {
@@ -303,11 +378,11 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     void db.states.put(nextRec)
 
     const next = queue.shift() ?? null
-    const session = get().session
-    if (session) {
-      session.correct = done.correct
-      session.wrong = done.wrong
-    }
+    const currentSession = get().session
+    const session = currentSession ? {
+      ...currentSession,
+      completedSenses: (currentSession.completedSenses ?? 0) + 1,
+    } : null
 
     if (next === null) {
       const finished: SessionRecord = session

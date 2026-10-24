@@ -84,7 +84,7 @@ export default function Settings() {
           label="严格拼写"
           checked={settings.strictSpelling}
           onChange={v => upd({ strictSpelling: v })}
-          desc="要求输入完全的平假名形式"
+          desc="可输入平假名或罗马字；开启后要求完全匹配"
         />
         <Divider />
         <SliderRow

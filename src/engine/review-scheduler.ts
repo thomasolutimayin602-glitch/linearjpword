@@ -40,6 +40,7 @@ export function freshState(senseId: number): SenseState {
       meaning: { correct: 0, wrong: 0 },
       word: { correct: 0, wrong: 0 },
       spell: { correct: 0, wrong: 0 },
+      example: { correct: 0, wrong: 0 },
     },
   }
 }
@@ -92,7 +93,7 @@ export function advanceLadder(rec: SenseState): SenseState {
     status: 'learning',
     mastery: masteryFor(step, true),
     streak: 0,
-    dueAt: now + REVIEW_LADDER[step] * DAY,
+    dueAt: now + REVIEW_LADDER[step - 1] * DAY,
     lastSeenAt: now,
     totalCorrect: rec.totalCorrect + 1,
   }
@@ -107,22 +108,31 @@ export function resetLadder(rec: SenseState): SenseState {
     status: 'learning',
     mastery: masteryFor(0, false),
     streak: 0,
-    dueAt: null,                 // due again as soon as this session ends
+    dueAt: now,                  // immediately due if the learner leaves before retrying
     lastSeenAt: now,
     lastWrongAt: now,
     totalWrong: rec.totalWrong + 1,
   }
 }
 
+export interface StudyPlan {
+  newIds: number[]
+  dueIds: number[]
+  pinnedIds: number[]
+  /** the exact order used by the session */
+  queue: number[]
+  total: number
+}
+
 /**
- * Build the queue for a fresh session:
- * `newCount` unseen senses, then every sense whose review is due.
+ * Build today's plan: `newCount` unseen senses plus every sense whose review
+ * is due. Pinned senses jump the queue but are not double counted.
  */
-export function buildSessionQueue(
+export function buildStudyPlan(
   states: Map<number, SenseState>,
   newCount: number,
   now: number = Date.now(),
-): number[] {
+): StudyPlan {
   const fresh: number[] = []
   const due: number[] = []
 
@@ -141,14 +151,29 @@ export function buildSessionQueue(
     .map(r => r.senseId)
 
   const seen = new Set<number>()
-  const out: number[] = []
+  const queue: number[] = []
   for (const id of [...pinned, ...fresh, ...due]) {
     if (!seen.has(id)) {
       seen.add(id)
-      out.push(id)
+      queue.push(id)
     }
   }
-  return shuffle(out)
+  return {
+    newIds: fresh,
+    dueIds: due,
+    pinnedIds: pinned,
+    queue: shuffle(queue),
+    total: queue.length,
+  }
+}
+
+/** Backwards-compatible helper returning just the ordered queue. */
+export function buildSessionQueue(
+  states: Map<number, SenseState>,
+  newCount: number,
+  now: number = Date.now(),
+): number[] {
+  return buildStudyPlan(states, newCount, now).queue
 }
 
 /** Fisher–Yates shuffle. */

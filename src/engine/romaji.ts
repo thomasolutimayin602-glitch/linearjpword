@@ -195,6 +195,42 @@ export function gradeSpelling(
   return { correct: false, produced }
 }
 
+/** Katakana → hiragana, leaving other characters untouched. */
+export function toHiragana(text: string): string {
+  return [...text]
+    .map(ch => {
+      const code = ch.charCodeAt(0)
+      if (code >= 0x30a1 && code <= 0x30f6) return String.fromCharCode(code - 0x60)
+      return ch
+    })
+    .join('')
+}
+
+/**
+ * Grade a kana answer typed on the in-app keyboard.
+ * Katakana is accepted for hiragana targets unless strict spelling is on.
+ */
+export function gradeKana(
+  typed: string,
+  targetKana: string,
+  strict: boolean,
+): { correct: boolean; produced: string } {
+  let a = typed.trim()
+  let b = targetKana.trim()
+  if (!strict) {
+    a = toHiragana(a)
+    b = toHiragana(b)
+  }
+  if (a === b) return { correct: true, produced: a }
+
+  if (!strict) {
+    // a missing prolonged-sound mark is a common near miss
+    const strip = (x: string) => x.replace(/ー/g, '')
+    if (strip(a) === strip(b)) return { correct: true, produced: a }
+  }
+  return { correct: false, produced: a }
+}
+
 /** Split a kana reading into morae for per-mora display. */
 export function splitMorae(kana: string): string[] {
   const small = 'ゃゅょぁぃぅぇぉ'

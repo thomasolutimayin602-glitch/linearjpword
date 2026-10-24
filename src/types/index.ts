@@ -42,15 +42,16 @@ export interface SenseState {
   modeStats: Record<DrillMode, { correct: number; wrong: number }>
 }
 
-export type DrillMode = 'listen' | 'meaning' | 'word' | 'spell'
+export type DrillMode = 'listen' | 'meaning' | 'word' | 'spell' | 'example'
 
-export const DRILL_ORDER: DrillMode[] = ['listen', 'meaning', 'word', 'spell']
+export const DRILL_ORDER: DrillMode[] = ['listen', 'meaning', 'word', 'spell', 'example']
 
 export const DRILL_LABEL: Record<DrillMode, string> = {
-  listen: 'Listening',
-  meaning: 'Meaning',
-  word: 'Word',
-  spell: 'Spelling',
+  listen: '听读',
+  meaning: '选义',
+  word: '选词',
+  spell: '假名拼写',
+  example: '例句',
 }
 
 /** A word presented during a session, with its generated question set. */
@@ -72,6 +73,12 @@ export interface SessionRecord {
   correct: number
   wrong: number
   durationMs: number
+  /** number of word passes finished in this session */
+  completedSenses?: number
+  /** unique senses included in the session */
+  senseIds?: number[]
+  /** unique senses answered wrong at least once */
+  wrongSenseIds?: number[]
 }
 
 export interface Settings {

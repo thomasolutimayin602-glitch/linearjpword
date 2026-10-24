@@ -7,10 +7,11 @@ import ProgressRing from '../components/ProgressRing'
 import StatTile from '../components/StatTile'
 import ProgressBar from '../components/ProgressBar'
 import { IconFlame, IconBook, IconTrophy, IconClock } from '../components/icons'
+import { buildStudyPlan } from '../engine/review-scheduler'
 
 export default function Home() {
   const nav = useNavigate()
-  const { hydrate, startSession } = useStudyStore()
+  const { hydrate, startSession, states, settings } = useStudyStore()
   const [learned, setLearned] = useState(0)
   const [mastered, setMastered] = useState(0)
   const [learning, setLearning] = useState(0)
@@ -48,8 +49,8 @@ export default function Home() {
   useEffect(() => { load() }, [load])
 
   const handleStart = async () => {
-    await startSession()
-    nav('/study')
+    const started = await startSession()
+    if (started) nav('/study')
   }
 
   const handleCheckIn = async () => {
@@ -74,6 +75,7 @@ export default function Home() {
   }
 
   const total = WORDS.length
+  const plan = useMemo(() => buildStudyPlan(states, settings.dailyNewWords), [states, settings.dailyNewWords])
   const pct = total > 0 ? Math.round((mastered / total) * 100) : 0
   const greeting = (() => {
     const h = new Date().getHours()
@@ -138,10 +140,17 @@ export default function Home() {
       {/* start button */}
       <button
         onClick={handleStart}
-        className="btn-primary w-full py-4.5 text-[17px] font-extrabold tracking-wide"
+        disabled={plan.total === 0}
+        className={`btn-primary w-full py-4.5 text-[17px] font-extrabold tracking-wide ${plan.total === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
-        {todayDone ? '继续背单词' : '开始背单词'}
+        {plan.total === 0 ? '今日暂无待学习词' : `${todayDone ? '继续背单词' : '开始背单词'} · ${plan.total} 词`}
       </button>
+
+      {plan.total > 0 && (
+        <div className="mt-2 text-center text-[11px] text-gray-400">
+          新词 {plan.newIds.length} 个 · 到期复习 {plan.dueIds.filter(id => !plan.newIds.includes(id)).length} 个
+        </div>
+      )}
 
       {!todayDone && (
         <div className="mt-2.5 text-center text-[11px] text-gray-400">
