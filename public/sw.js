@@ -1,4 +1,4 @@
-const CACHE = 'toword-jp-v1'
+const CACHE = 'toword-jp-v2'
 
 self.addEventListener('install', event => {
   self.skipWaiting()

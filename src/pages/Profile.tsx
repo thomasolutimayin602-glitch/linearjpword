@@ -5,9 +5,12 @@ import { IconGear, IconTrophy, IconChart, IconChevron, IconBook } from '../compo
 
 export default function Profile() {
   const nav = useNavigate()
-  const { profile, plan, guest, states } = useStudyStore()
-  const learned = [...states.values()].filter(s => s.status !== 'new').length
-  const mastered = [...states.values()].filter(s => s.status === 'archived').length
+  const { profile, plan, guest, states, books, bookId } = useStudyStore()
+  const currentBook = books.find(book => book.id === bookId)
+  const currentBookIds = new Set(currentBook?.wordIds ?? [])
+  const bookStates = [...states.values()].filter(state => currentBookIds.size === 0 || currentBookIds.has(state.senseId))
+  const learned = bookStates.filter(s => s.status !== 'new').length
+  const mastered = bookStates.filter(s => s.status === 'archived').length
   const remaining = plan
     ? plan.queue.filter(id => !plan.completedIds.includes(id) && states.get(id)?.status !== 'archived').length
     : 0
@@ -51,6 +54,7 @@ export default function Profile() {
       </div>
 
       <div className="card divide-y divide-gray-100">
+        <Row icon={<IconBook width={18} height={18} />} title="我的词书" hint={currentBook?.title ?? 'N5 入门核心词'} onClick={() => nav('/books')} />
         <Row icon={<IconChart width={18} height={18} />} title="学习记录" onClick={() => nav('/stats')} />
         <Row icon={<IconBook width={18} height={18} />} title="收藏夹" onClick={() => nav('/favorites')} />
         <Row icon={<IconTrophy width={18} height={18} />} title="勋章与学习装备" hint="即将开放" />

@@ -14,6 +14,7 @@ import Search, { WordDetail, Favorites } from './pages/Search'
 import Welcome from './pages/Welcome'
 import Policy from './pages/Policy'
 import Onboarding from './pages/Onboarding'
+import BookLibrary, { BookDetail } from './pages/Books'
 
 export default function App() {
   return (
@@ -61,6 +62,8 @@ function AppRoutes() {
           <Route path="/community" element={<Community />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/search" element={<Search />} />
+          <Route path="/books" element={<BookLibrary />} />
+          <Route path="/books/:bookId" element={<BookDetail />} />
           <Route path="/word/:wordId" element={<WordDetail />} />
           <Route path="/favorites" element={<Favorites />} />
       </Route>

@@ -8,6 +8,7 @@ import CountdownTimer from '../components/CountdownTimer'
 import AudioPlayer from '../components/AudioPlayer'
 import ProgressBar from '../components/ProgressBar'
 import { IconBack, IconRefresh } from '../components/icons'
+import { posLabel } from '../lib/pos'
 
 const LETTERS = ['A', 'B', 'C', 'D']
 
@@ -165,7 +166,7 @@ export default function Study() {
                 {w.word !== w.kana && <div className="text-[14px] text-gray-400">{w.word}</div>}
                 <div className="flex items-center justify-center gap-2 mt-1">
                   <AudioPlayer text={w.kana} size={36} />
-                  <span className="text-[11px] text-gray-400">{w.pos}</span>
+                  <span className="text-[11px] text-gray-400">{posLabel(w.pos)}</span>
                 </div>
               </div>
               <div className="mt-1">
@@ -190,7 +191,7 @@ export default function Study() {
                 <div className="text-[22px] font-bold text-gray-800 leading-tight">{w.meaning}</div>
                 <div className="flex items-center justify-center gap-2 mt-1">
                   <AudioPlayer text={w.kana} size={36} />
-                  <span className="text-[11px] text-gray-400">{w.pos}</span>
+                  <span className="text-[11px] text-gray-400">{posLabel(w.pos)}</span>
                 </div>
               </div>
               <div className="mt-1">
@@ -258,7 +259,7 @@ export default function Study() {
             <div className="text-center mb-4">
               <div className="text-[13px] text-gray-400 mb-2">朗读例句，判断是否记住</div>
               <div className="text-[25px] font-bold text-gray-900 leading-relaxed">{w.examples[0]?.ja ?? `${w.kana}。`}</div>
-              <div className="text-[14px] text-gray-500 mt-2">{w.examples[0]?.en ?? w.meaning}</div>
+              <div className="text-[14px] text-gray-500 mt-2">{w.examples[0]?.zh ?? w.meaning}</div>
               <div className="flex items-center justify-center gap-2 mt-3">
                 <AudioPlayer text={w.examples[0]?.ja ?? w.kana} size={36} />
                 <span className="text-[11px] text-gray-400">{w.meaning}</span>
@@ -371,7 +372,7 @@ function FeedbackPanel({ w, fb, correctText }: {
           {w.examples[0] && (
             <div className="mt-2 text-[12px] text-gray-500">
               <div>{w.examples[0].ja}</div>
-              <div className="text-gray-400">{w.examples[0].en}</div>
+              <div className="text-gray-400">{w.examples[0].zh}</div>
             </div>
           )}
         </div>

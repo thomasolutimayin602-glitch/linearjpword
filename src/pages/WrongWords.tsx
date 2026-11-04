@@ -5,6 +5,7 @@ import { WORDS_BY_ID } from '../data/words'
 import type { SenseState } from '../types'
 import { useStudyStore } from '../stores/study-store'
 import { IconPin, IconChevron, IconTrash } from '../components/icons'
+import { posLabel } from '../lib/pos'
 
 interface Row extends SenseState { word: string }
 
@@ -90,13 +91,13 @@ export default function WrongWords() {
                       <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[12px]">
                         <InfoLine label="读音" value={w.romaji} />
                         <InfoLine label="释义" value={w.meaning} />
-                        <InfoLine label="词性" value={w.pos} />
+                        <InfoLine label="词性" value={posLabel(w.pos)} />
                         <InfoLine label="等级" value={w.level} />
                       </div>
                       {w.examples[0] && (
                         <div className="mt-3 rounded-xl bg-white border border-gray-100 p-3 text-[12px]">
                           <div className="text-gray-800 font-medium">{w.examples[0].ja}</div>
-                          <div className="text-gray-400 mt-0.5">{w.examples[0].en}</div>
+                          <div className="text-gray-400 mt-0.5">{w.examples[0].zh}</div>
                         </div>
                       )}
                       <div className="flex gap-2 mt-3">

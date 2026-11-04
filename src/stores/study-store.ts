@@ -1,8 +1,10 @@
 import { create } from 'zustand'
 import { db } from '../db/schema'
 import { WORDS, WORDS_BY_ID } from '../data/words'
+import { DEFAULT_BOOK_ID } from '../content/books'
+import { contentProvider } from '../content/provider'
 import type {
-  DailyPlan, DrillMode, GuestTrial, SenseState, SessionRecord, Settings, UserProfile,
+  DailyPlan, DrillMode, GuestTrial, SenseState, SessionRecord, Settings, UserProfile, WordBook,
 } from '../types'
 import { DEFAULT_SETTINGS, DRILL_ORDER, GUEST_TRIAL_LIMIT } from '../types'
 import {
@@ -38,6 +40,8 @@ interface Runtime {
 interface StudyState {
   states: Map<number, SenseState>
   settings: Settings
+  books: WordBook[]
+  bookId: string
   hydrated: boolean
   profile: UserProfile | null
   plan: DailyPlan | null
@@ -51,6 +55,7 @@ interface StudyState {
   bootstrap: () => Promise<void>
   acceptPolicy: () => Promise<void>
   saveProfile: (draft: ProfileDraft) => Promise<UserProfile>
+  setCurrentBook: (bookId: string) => Promise<void>
   ensureTodayPlan: (regenerate?: boolean) => Promise<DailyPlan>
   startSession: () => Promise<boolean>
   startPractice: (senseId: number) => Promise<boolean>
@@ -73,6 +78,7 @@ export type ProfileDraft = Omit<UserProfile, 'id' | 'createdAt' | 'updatedAt'>
 const LOCAL_PROFILE_ID = 'local-profile'
 const META_POLICY = 'policyAcceptedAt'
 const META_GUEST = 'guestTrial'
+const META_BOOK = 'currentBookId'
 
 const EMPTY: Runtime = {
   state: 'idle', queue: [], current: null, modePos: 0,
@@ -122,6 +128,8 @@ function persist(rec: SenseState) {
 export const useStudyStore = create<StudyState>((set, get) => ({
   states: new Map(),
   settings: DEFAULT_SETTINGS,
+  books: [],
+  bookId: DEFAULT_BOOK_ID,
   hydrated: false,
   profile: null,
   plan: null,
@@ -133,9 +141,10 @@ export const useStudyStore = create<StudyState>((set, get) => ({
 
   hydrate: async () => {
     if (get().hydrated) return
-    const [rows, settingsRows] = await Promise.all([
+    const [rows, settingsRows, books] = await Promise.all([
       db.states.toArray(),
       db.settings.toArray(),
+      contentProvider.listBooks(),
     ])
     const states = new Map<number, SenseState>()
     for (const r of rows) {
@@ -153,7 +162,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     await db.states.bulkPut([...states.values()])
     const settings: Settings =
       settingsRows.length > 0 ? { ...DEFAULT_SETTINGS, ...settingsRows[0] } : DEFAULT_SETTINGS
-    set({ states, settings, hydrated: true })
+    set({ states, settings, books, hydrated: true })
   },
 
   bootstrap: async () => {
@@ -169,8 +178,19 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       answered: Math.max(0, Number(storedGuest?.answered) || 0),
       limit: Math.max(1, Number(storedGuest?.limit) || GUEST_TRIAL_LIMIT),
     }
+    const books = get().books
+    const storedBookId = typeof meta.get(META_BOOK) === 'string' ? meta.get(META_BOOK) as string : null
+    const selectedBookId = [profile?.bookId, storedBookId, DEFAULT_BOOK_ID]
+      .find(id => id && books.some(book => book.id === id)) ?? DEFAULT_BOOK_ID
+    const normalizedProfile = profile
+      ? { ...profile, bookId: selectedBookId }
+      : null
+    if (normalizedProfile && profile?.bookId !== selectedBookId) {
+      await db.profiles.put(normalizedProfile)
+    }
     set({
-      profile: profile ?? null,
+      profile: normalizedProfile,
+      bookId: selectedBookId,
       guest,
       policyAccepted: Boolean(meta.get(META_POLICY)),
       bootstrapped: true,
@@ -187,39 +207,74 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   saveProfile: async (draft) => {
     const existing = get().profile
     const now = Date.now()
+    const bookId = get().books.some(book => book.id === draft.bookId) ? draft.bookId : DEFAULT_BOOK_ID
     const profile: UserProfile = {
       ...draft,
+      bookId,
       id: LOCAL_PROFILE_ID,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
     await db.profiles.put(profile)
     await get().updateSettings({ dailyNewWords: profile.dailyNewWords })
-    set({ profile })
+    set({ profile, bookId })
     await get().ensureTodayPlan(true)
     return profile
+  },
+
+  setCurrentBook: async (bookId) => {
+    const book = get().books.find(item => item.id === bookId)
+    if (!book) return
+
+    const existing = get().profile
+    if (existing) {
+      const profile = { ...existing, bookId, updatedAt: Date.now() }
+      await db.profiles.put(profile)
+      set({ profile, bookId })
+    } else {
+      await db.meta.put({ key: META_BOOK, value: bookId })
+      set({ bookId })
+    }
+    await get().ensureTodayPlan(true)
   },
 
   ensureTodayPlan: async (regenerate = false) => {
     await get().hydrate()
     const date = dayKey()
-    const stored = await db.plans.get(`plan-${date}`)
+    const { states, settings, profile, bookId, books } = get()
+    const planId = `plan-${date}-${bookId}`
+    const legacyPlanId = `plan-${date}`
+    const stored = await db.plans.get(planId)
     const current = get().plan
     if (!regenerate) {
-      const existing = current?.date === date ? current : stored?.date === date ? stored : null
+      const existing = current?.id === planId ? current : stored ?? null
       if (existing) {
         if (existing !== current) set({ plan: existing })
         return existing
       }
+      if (bookId === DEFAULT_BOOK_ID) {
+        const legacy = await db.plans.get(legacyPlanId)
+        if (legacy?.date === date) {
+          const migrated: DailyPlan = { ...legacy, bookId, id: planId }
+          await db.plans.put(migrated)
+          set({ plan: migrated })
+          return migrated
+        }
+      }
     }
-    const { states, settings, profile } = get()
-    const built = buildStudyPlan(states, settings.dailyNewWords)
-    const previous = (current?.date === date ? current : stored?.date === date ? stored : null)
+    const book = books.find(item => item.id === bookId)
+    const allowedIds = new Set(book?.wordIds ?? WORDS.map(word => word.id))
+    const built = buildStudyPlan(states, settings.dailyNewWords, Date.now(), allowedIds)
+    const previous = [
+      current?.id === planId ? current : null,
+      stored ?? null,
+    ].find(item => item?.date === date) ?? null
     const now = Date.now()
     const plan: DailyPlan = {
-      id: `plan-${date}`,
+      id: planId,
       date,
       profileId: profile?.id ?? null,
+      bookId,
       queue: built.queue,
       newIds: built.newIds,
       dueIds: built.dueIds,

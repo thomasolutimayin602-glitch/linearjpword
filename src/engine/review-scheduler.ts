@@ -132,11 +132,13 @@ export function buildStudyPlan(
   states: Map<number, SenseState>,
   newCount: number,
   now: number = Date.now(),
+  allowedIds?: ReadonlySet<number>,
 ): StudyPlan {
   const fresh: number[] = []
   const due: number[] = []
 
   for (const rec of states.values()) {
+    if (allowedIds && !allowedIds.has(rec.senseId)) continue
     if (rec.status === 'archived') continue
     if (rec.status === 'new') {
       if (fresh.length < newCount) fresh.push(rec.senseId)
@@ -147,7 +149,7 @@ export function buildStudyPlan(
 
   // pinned senses always jump the queue
   const pinned = [...states.values()]
-    .filter(r => r.pinned && r.status !== 'archived')
+    .filter(r => r.pinned && r.status !== 'archived' && (!allowedIds || allowedIds.has(r.senseId)))
     .map(r => r.senseId)
 
   const seen = new Set<number>()

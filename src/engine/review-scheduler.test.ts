@@ -81,6 +81,23 @@ describe('buildStudyPlan', () => {
     states.set(1, { ...freshState(1), status: 'archived' })
     expect(buildStudyPlan(states, 10).total).toBe(0)
   })
+
+  it('only plans senses in the active book', () => {
+    const now = Date.now()
+    const states = new Map<number, SenseState>()
+    states.set(1, freshState(1))
+    states.set(2, freshState(2))
+    states.set(3, learningState(3, now - 1000))
+    states.set(4, learningState(4, now - 2000))
+    states.set(5, { ...freshState(5), pinned: true })
+    states.set(6, { ...learningState(6, now - 3000), pinned: true })
+
+    const plan = buildStudyPlan(states, 5, now, new Set([2, 4, 6]))
+    expect(plan.newIds).toEqual([2])
+    expect(plan.dueIds).toEqual(expect.arrayContaining([4, 6]))
+    expect(plan.pinnedIds).toEqual([6])
+    expect(new Set(plan.queue)).toEqual(new Set([2, 4, 6]))
+  })
 })
 
 describe('buildOptions', () => {

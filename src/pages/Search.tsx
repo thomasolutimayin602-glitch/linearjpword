@@ -4,17 +4,7 @@ import { db } from '../db/schema'
 import { WORDS } from '../data/words'
 import { IconBack, IconSound, IconChevron } from '../components/icons'
 import AudioPlayer from '../components/AudioPlayer'
-
-const POS_LABEL: Record<string, string> = {
-  noun: '名词',
-  verb: '动词',
-  adjective: '形容词',
-  adverb: '副词',
-}
-
-function posLabel(pos: string) {
-  return POS_LABEL[pos] ?? pos
-}
+import { posLabel } from '../lib/pos'
 
 async function persistFavorite(senseId: number, currentlyFavorite: boolean) {
   const id = `fav-${senseId}`
@@ -129,7 +119,7 @@ export function WordDetail() {
         {w.examples[0] && (
           <div className="mt-4 rounded-2xl bg-[#FFF8F5] p-3.5">
             <div className="text-[14px] font-medium text-gray-800">{w.examples[0].ja}</div>
-            <div className="text-[12px] text-gray-500 mt-1">{w.examples[0].en}</div>
+            <div className="text-[12px] text-gray-500 mt-1">{w.examples[0].zh}</div>
           </div>
         )}
         <div className="grid grid-cols-2 gap-2 mt-4">

@@ -93,7 +93,7 @@ export default function Settings() {
           min={30} max={90} step={10}
           onChange={v => upd({ noneOptionMinMastery: v })}
           suffix="%"
-          desc="掌握度达到后，第四个选项替换为「None of the above」"
+          desc="掌握度达到后，第四个选项替换为「以上都不对」"
         />
       </Section>
 

@@ -13,7 +13,7 @@ import { dayKey, dayKeyOffset } from '../lib/date'
 
 export default function Home() {
   const nav = useNavigate()
-  const { bootstrap, startSession, states, profile, plan, guest } = useStudyStore()
+  const { bootstrap, startSession, states, profile, plan, guest, books, bookId } = useStudyStore()
   const [sessions, setSessions] = useState<SessionRecord[]>([])
 
   const refreshSessions = useMemo(() => async () => {
@@ -24,11 +24,13 @@ export default function Home() {
     void bootstrap().then(refreshSessions)
   }, [bootstrap, refreshSessions])
 
-  const recs = [...states.values()]
+  const currentBook = books.find(book => book.id === bookId)
+  const currentBookIds = new Set(currentBook?.wordIds ?? WORDS.map(word => word.id))
+  const recs = [...states.values()].filter(state => currentBookIds.has(state.senseId))
   const learned = recs.filter(s => s.status !== 'new').length
   const mastered = recs.filter(s => s.status === 'archived').length
   const learning = recs.filter(s => s.status === 'learning' || s.status === 'new').length
-  const total = WORDS.length
+  const total = currentBook?.wordIds.length ?? WORDS.length
 
   const todayStr = dayKey()
   const todays = sessions.filter(s => s.date === todayStr)
@@ -157,6 +159,17 @@ export default function Home() {
           <ProgressBar current={learned} total={total} />
         </div>
       </div>
+
+      <button onClick={() => nav('/books')} className="card w-full p-3.5 mb-3 flex items-center gap-3 text-left hover:shadow-md transition-shadow active:scale-[0.99]">
+        <span className="w-10 h-10 rounded-xl text-white text-[17px] font-bold flex items-center justify-center shrink-0" style={{ backgroundColor: currentBook?.accent ?? '#FF6A5F' }}>
+          {currentBook?.icon ?? 'あ'}
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-bold text-gray-800 truncate">{currentBook?.title ?? 'N5 入门核心词'}</div>
+          <div className="text-[10px] text-gray-400 mt-0.5">{currentBook?.wordIds.length ?? total} 词 · {currentBook?.level ?? 'N5'} · 已内置，可离线学习</div>
+        </div>
+        <span className="text-[11px] font-bold text-[#FF5252] shrink-0">切换词书</span>
+      </button>
 
       <button
         onClick={handleStart}

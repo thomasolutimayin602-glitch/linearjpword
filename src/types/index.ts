@@ -4,7 +4,8 @@ export type JLPTLevel = 'N5' | 'N4' | 'N3' | 'N2' | 'N1'
 
 export interface Example {
   ja: string
-  en: string
+  zh: string
+  en?: string
 }
 
 /** A single word *sense* (one meaning). Towords studies one sense at a time. */
@@ -14,11 +15,28 @@ export interface WordSense {
   kana: string          // かな reading
   romaji: string        // rōmaji reading
   accent: string        // pitch accent, e.g. "[1]"
-  meaning: string       // English definition
+  meaning: string       // Chinese definition (primary UI text)
+  meaningEn: string     // English reference, kept for provenance only
   pos: string           // part of speech
   examples: Example[]
   level: JLPTLevel
   tags: string[]
+}
+
+/** A study vocabulary book. Content is bundled for offline use in this version. */
+export interface WordBook {
+  id: string
+  title: string
+  subtitle: string
+  description: string
+  level: JLPTLevel
+  wordIds: number[]
+  version: string
+  source: 'bundled'
+  availability: 'offline'
+  isDevelopmentContent: boolean
+  accent: string
+  icon: string
 }
 
 /** Per-sense learning state, stored locally. */
@@ -107,6 +125,7 @@ export interface UserProfile {
   examDate: string | null
   dailyMinutes: number
   dailyNewWords: number
+  bookId: string
   createdAt: number
   updatedAt: number
 }
@@ -116,6 +135,7 @@ export interface DailyPlan {
   id: string
   date: string
   profileId: string | null
+  bookId: string
   queue: number[]
   newIds: number[]
   dueIds: number[]

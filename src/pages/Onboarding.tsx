@@ -24,7 +24,7 @@ function newWordsFor(minutes: number): number {
 
 export default function Onboarding() {
   const nav = useNavigate()
-  const { profile, states, saveProfile } = useStudyStore()
+  const { profile, states, books, bookId: currentBookId, saveProfile } = useStudyStore()
   const [step, setStep] = useState(0)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<ProfileDraft>({
@@ -35,12 +35,18 @@ export default function Onboarding() {
     examDate: profile?.examDate ?? null,
     dailyMinutes: profile?.dailyMinutes ?? 15,
     dailyNewWords: profile?.dailyNewWords ?? newWordsFor(profile?.dailyMinutes ?? 15),
+    bookId: profile?.bookId ?? currentBookId,
   })
 
+  const allowedBookIds = useMemo(() => {
+    const book = books.find(item => item.id === draft.bookId)
+    return book ? new Set(book.wordIds) : undefined
+  }, [books, draft.bookId])
   const preview = useMemo(
-    () => buildStudyPlan(states, newWordsFor(draft.dailyMinutes)),
-    [states, draft.dailyMinutes],
+    () => buildStudyPlan(states, newWordsFor(draft.dailyMinutes), undefined, allowedBookIds),
+    [states, draft.dailyMinutes, allowedBookIds],
   )
+  const selectedBook = books.find(item => item.id === draft.bookId)
   const patch = (part: Partial<ProfileDraft>) => setDraft(d => ({ ...d, ...part }))
   const next = () => setStep(s => Math.min(STEPS.length - 1, s + 1))
   const back = () => (step === 0 ? nav(-1) : setStep(s => s - 1))
@@ -155,12 +161,33 @@ export default function Onboarding() {
           <section className="anim-up mt-6">
             <h1 className="text-[24px] font-extrabold text-gray-900">你的学习计划</h1>
             <p className="text-[13px] text-gray-400 mt-1.5">生成后即可开始，计划会保存在今天的学习首页。</p>
-            <div className="card p-5 mt-6">
+            <div className="mt-5">
+              <div className="text-[12px] font-bold text-gray-500 mb-2">选择词书</div>
+              <div className="space-y-2">
+                {books.map(book => (
+                  <button
+                    key={book.id}
+                    onClick={() => patch({ bookId: book.id })}
+                    className={`card w-full p-3.5 text-left transition-all ${draft.bookId === book.id ? 'border-[#FF5252] bg-[#FFF8F8] ring-2 ring-[#FFD6D6]' : ''}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="w-9 h-9 rounded-xl text-white text-[16px] font-bold flex items-center justify-center shrink-0" style={{ backgroundColor: book.accent }}>{book.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[13px] font-bold text-gray-800">{book.title}</div>
+                        <div className="text-[10px] text-gray-400 mt-0.5">{book.wordIds.length} 词 · {book.level} · 内置离线</div>
+                      </div>
+                      <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center text-[11px] font-bold shrink-0 ${draft.bookId === book.id ? 'border-[#FF5252] bg-[#FF5252] text-white' : 'border-gray-200 text-transparent'}`}>✓</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="card p-5 mt-4">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#FF7A6E] to-[#FF5252] text-white flex items-center justify-center text-lg font-extrabold">拓</div>
                 <div>
                   <div className="font-bold text-gray-800">{draft.nickname || '同学'}</div>
-                  <div className="text-[11px] text-gray-400 mt-0.5">{IDENTITY_LABEL[draft.identity]} · {draft.level} · {GOAL_LABEL[draft.goal]}</div>
+                  <div className="text-[11px] text-gray-400 mt-0.5">{selectedBook?.title ?? 'N5 入门核心词'} · {IDENTITY_LABEL[draft.identity]} · {draft.level}</div>
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-2 mt-5 text-center">
