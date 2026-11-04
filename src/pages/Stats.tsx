@@ -4,6 +4,7 @@ import { WORDS } from '../data/words'
 import type { SenseState, SessionRecord } from '../types'
 import ProgressBar from '../components/ProgressBar'
 import { IconFlame, IconTrophy, IconBook, IconChart } from '../components/icons'
+import { dayKey, dayKeyOffset } from '../lib/date'
 
 export default function Stats() {
   const [states, setStates] = useState<SenseState[]>([])
@@ -19,20 +20,18 @@ export default function Stats() {
   const learned = states.filter(s => s.status !== 'new').length
   const mastered = states.filter(s => s.status === 'archived').length
   const learning = states.filter(s => s.status === 'learning' || s.status === 'new').length
-    const totalCorrect = states.reduce((a, s) => a + s.totalCorrect, 0)
+  const totalCorrect = states.reduce((a, s) => a + s.totalCorrect, 0)
   const totalWrong = states.reduce((a, s) => a + s.totalWrong, 0)
   const accuracy = totalCorrect + totalWrong > 0 ? Math.round((totalCorrect / (totalCorrect + totalWrong)) * 100) : 0
 
   let streak = 0
   for (let i = 0; i < 365; i++) {
-    const d = new Date()
-    d.setDate(d.getDate() - i)
-    const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const ds = dayKeyOffset(i)
     if (sessions.find(s => s.date === ds && s.checkedIn)) streak++
     else if (i > 0) break
   }
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = dayKey()
   const todaySessions = sessions.filter(s => s.date === today)
   const todayCorrect = todaySessions.reduce((a, s) => a + s.correct, 0)
   const todayWrong = todaySessions.reduce((a, s) => a + s.wrong, 0)

@@ -1,14 +1,17 @@
 import { create } from 'zustand'
 import { db } from '../db/schema'
 import { WORDS, WORDS_BY_ID } from '../data/words'
-import type { DrillMode, SenseState, SessionRecord, Settings } from '../types'
-import { DEFAULT_SETTINGS, DRILL_ORDER } from '../types'
+import type {
+  DailyPlan, DrillMode, GuestTrial, SenseState, SessionRecord, Settings, UserProfile,
+} from '../types'
+import { DEFAULT_SETTINGS, DRILL_ORDER, GUEST_TRIAL_LIMIT } from '../types'
 import {
   advanceLadder, buildOptions, buildStudyPlan, freshState,
   noteMode, resetLadder, REVIEW_LADDER,
   type Question,
 } from '../engine/review-scheduler'
 import { gradeKana, gradeSpelling } from '../engine/romaji'
+import { dayKey } from '../lib/date'
 
 export type RunningState = 'idle' | 'drill' | 'summary'
 
@@ -36,10 +39,19 @@ interface StudyState {
   states: Map<number, SenseState>
   settings: Settings
   hydrated: boolean
+  profile: UserProfile | null
+  plan: DailyPlan | null
+  guest: GuestTrial
+  policyAccepted: boolean
+  bootstrapped: boolean
   runtime: Runtime
   session: SessionRecord | null
 
   hydrate: () => Promise<void>
+  bootstrap: () => Promise<void>
+  acceptPolicy: () => Promise<void>
+  saveProfile: (draft: ProfileDraft) => Promise<UserProfile>
+  ensureTodayPlan: (regenerate?: boolean) => Promise<DailyPlan>
   startSession: () => Promise<boolean>
   startPractice: (senseId: number) => Promise<boolean>
   _completeMode: (mode: DrillMode, correct: boolean, guessed?: boolean, picked?: number) => void
@@ -56,16 +68,17 @@ interface StudyState {
   updateSettings: (patch: Partial<Settings>) => Promise<void>
 }
 
+export type ProfileDraft = Omit<UserProfile, 'id' | 'createdAt' | 'updatedAt'>
+
+const LOCAL_PROFILE_ID = 'local-profile'
+const META_POLICY = 'policyAcceptedAt'
+const META_GUEST = 'guestTrial'
+
 const EMPTY: Runtime = {
   state: 'idle', queue: [], current: null, modePos: 0,
   passWrong: false, question: null, questionAt: null,
   feedback: null, lastUndo: null,
   done: { correct: 0, wrong: 0, sensePasses: 0 },
-}
-
-const dayStr = () => {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 function speak(kana: string) {
@@ -110,6 +123,11 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   states: new Map(),
   settings: DEFAULT_SETTINGS,
   hydrated: false,
+  profile: null,
+  plan: null,
+  guest: { answered: 0, limit: GUEST_TRIAL_LIMIT },
+  policyAccepted: false,
+  bootstrapped: false,
   runtime: EMPTY,
   session: null,
 
@@ -138,19 +156,99 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     set({ states, settings, hydrated: true })
   },
 
+  bootstrap: async () => {
+    if (get().bootstrapped) return
+    await get().hydrate()
+    const [profile, metaRows] = await Promise.all([
+      db.profiles.get(LOCAL_PROFILE_ID),
+      db.meta.toArray(),
+    ])
+    const meta = new Map(metaRows.map(row => [row.key, row.value]))
+    const storedGuest = meta.get(META_GUEST) as Partial<GuestTrial> | undefined
+    const guest: GuestTrial = {
+      answered: Math.max(0, Number(storedGuest?.answered) || 0),
+      limit: Math.max(1, Number(storedGuest?.limit) || GUEST_TRIAL_LIMIT),
+    }
+    set({
+      profile: profile ?? null,
+      guest,
+      policyAccepted: Boolean(meta.get(META_POLICY)),
+      bootstrapped: true,
+    })
+    await get().ensureTodayPlan()
+  },
+
+  acceptPolicy: async () => {
+    const acceptedAt = Date.now()
+    await db.meta.put({ key: META_POLICY, value: acceptedAt })
+    set({ policyAccepted: true })
+  },
+
+  saveProfile: async (draft) => {
+    const existing = get().profile
+    const now = Date.now()
+    const profile: UserProfile = {
+      ...draft,
+      id: LOCAL_PROFILE_ID,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    }
+    await db.profiles.put(profile)
+    await get().updateSettings({ dailyNewWords: profile.dailyNewWords })
+    set({ profile })
+    await get().ensureTodayPlan(true)
+    return profile
+  },
+
+  ensureTodayPlan: async (regenerate = false) => {
+    await get().hydrate()
+    const date = dayKey()
+    const stored = await db.plans.get(`plan-${date}`)
+    const current = get().plan
+    if (!regenerate) {
+      const existing = current?.date === date ? current : stored?.date === date ? stored : null
+      if (existing) {
+        if (existing !== current) set({ plan: existing })
+        return existing
+      }
+    }
+    const { states, settings, profile } = get()
+    const built = buildStudyPlan(states, settings.dailyNewWords)
+    const previous = (current?.date === date ? current : stored?.date === date ? stored : null)
+    const now = Date.now()
+    const plan: DailyPlan = {
+      id: `plan-${date}`,
+      date,
+      profileId: profile?.id ?? null,
+      queue: built.queue,
+      newIds: built.newIds,
+      dueIds: built.dueIds,
+      completedIds: previous?.completedIds ?? [],
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now,
+    }
+    await db.plans.put(plan)
+    set({ plan })
+    return plan
+  },
+
   startSession: async () => {
     await get().hydrate()
-    const { states, settings } = get()
-    const plan = buildStudyPlan(states, settings.dailyNewWords)
-    if (plan.total === 0) return false
-    const [first, ...queue] = plan.queue
+    const { states, settings, guest, profile } = get()
+    if (!profile && guest.answered >= guest.limit) return false
+    const dailyPlan = await get().ensureTodayPlan()
+    const sessionIds = dailyPlan.queue.filter(id => {
+      const rec = states.get(id)
+      return rec && rec.status !== 'archived' && !dailyPlan.completedIds.includes(id)
+    })
+    if (sessionIds.length === 0) return false
+    const [first, ...queue] = sessionIds
 
     const now = Date.now()
-    const sessionIds = plan.queue
     const newSenses = sessionIds.filter(id => states.get(id)?.status === 'new').length
     const session: SessionRecord = {
       id: `s-${now}`,
-      date: dayStr(),
+      date: dayKey(),
       startedAt: now,
       finishedAt: null,
       checkedIn: false,
@@ -185,13 +283,14 @@ export const useStudyStore = create<StudyState>((set, get) => ({
 
   startPractice: async (senseId: number) => {
     await get().hydrate()
-    const { states, settings } = get()
+    const { states, settings, guest, profile } = get()
+    if (!profile && guest.answered >= guest.limit) return false
     const rec = states.get(senseId)
     if (!rec || rec.status === 'archived') return false
     const now = Date.now()
     const session: SessionRecord = {
       id: `practice-${now}`,
-      date: dayStr(),
+        date: dayKey(),
       startedAt: now,
       finishedAt: null,
       checkedIn: false,
@@ -224,6 +323,12 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     if (cur == null) return
 
     const rec = get().states.get(cur)!
+    if (!get().profile) {
+      const guest = get().guest
+      const nextGuest = { ...guest, answered: Math.min(guest.limit, guest.answered + 1) }
+      set({ guest: nextGuest })
+      void db.meta.put({ key: META_GUEST, value: nextGuest })
+    }
     const effective = guessed ? false : correct
     const updated = noteMode(rec, mode, effective)
     const states = new Map(get().states).set(cur, updated)
@@ -312,6 +417,11 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     if (!r.feedback || !r.lastUndo || r.current == null) return
     const { recBefore, passWrongBefore, doneBefore, sessionBefore } = r.lastUndo
     const cur = r.current
+    if (!get().profile && get().guest.answered > 0) {
+      const nextGuest = { ...get().guest, answered: get().guest.answered - 1 }
+      set({ guest: nextGuest })
+      void db.meta.put({ key: META_GUEST, value: nextGuest })
+    }
     const states = new Map(get().states).set(cur, recBefore)
     set({
       states,
@@ -366,6 +476,16 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     let nextRec: SenseState
     let queue = [...r.queue]
     const done = { ...r.done, sensePasses: r.done.sensePasses + 1 }
+    const dailyPlan = get().plan
+    if (!r.passWrong && dailyPlan && dailyPlan.date === dayKey() && dailyPlan.queue.includes(cur) && !dailyPlan.completedIds.includes(cur)) {
+      const updatedPlan: DailyPlan = {
+        ...dailyPlan,
+        completedIds: [...dailyPlan.completedIds, cur],
+        updatedAt: Date.now(),
+      }
+      set({ plan: updatedPlan })
+      void db.plans.put(updatedPlan)
+    }
 
     if (!r.passWrong) {
       nextRec = advanceLadder(rec)

@@ -208,11 +208,11 @@ export function buildOptions(
   const distractors = shuffle(
     WORDS.filter(w => w.id !== senseId && (field === 'meaning' ? w.meaning !== answer : w.kana !== answer)),
   )
-    .slice(0, 3)
+    .slice(0, useNoneOption ? 2 : 3)
     .map(w => (field === 'meaning' ? w.meaning : w.kana))
 
   const slots: string[] = [...distractors]
-  if (useNoneOption) slots.push('None of the above')
+  if (useNoneOption) slots.push('以上都不对')
 
   const correct = Math.floor(Math.random() * 4)
   const options: string[] = new Array(4).fill('')

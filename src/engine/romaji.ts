@@ -66,7 +66,7 @@ const SOKUON_CONSONANTS = 'kgsztdhbpmyrwcfjv'
 
 /** Convert a rōmaji string to hiragana. Unknown trailing fragments are kept. */
 export function romajiToKana(input: string): string {
-  const src = input.toLowerCase().replace(/[^a-z'\-]/g, '')
+  const src = input.toLowerCase().replace(/[^a-z'-]/g, '')
   let out = ''
   let i = 0
 

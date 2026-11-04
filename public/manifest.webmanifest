@@ -1,0 +1,20 @@
+{
+  "name": "語詞 - 日语背单词",
+  "short_name": "語詞",
+  "description": "移动优先的日语背单词应用，支持本地离线学习。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F5F6F7",
+  "theme_color": "#ef4444",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

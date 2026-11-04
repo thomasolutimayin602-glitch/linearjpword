@@ -94,6 +94,57 @@ export interface Settings {
   soundEffects: boolean
 }
 
+export type LearningIdentity = 'student' | 'adult' | 'exam'
+export type LearningGoal = 'jlpt' | 'travel' | 'anime' | 'work' | 'habit'
+
+/** Local learning profile. Cloud accounts are a later Provider concern. */
+export interface UserProfile {
+  id: string
+  nickname: string
+  identity: LearningIdentity
+  level: JLPTLevel
+  goal: LearningGoal
+  examDate: string | null
+  dailyMinutes: number
+  dailyNewWords: number
+  createdAt: number
+  updatedAt: number
+}
+
+/** Today's persisted plan, so every page sees the same queue and progress. */
+export interface DailyPlan {
+  id: string
+  date: string
+  profileId: string | null
+  queue: number[]
+  newIds: number[]
+  dueIds: number[]
+  completedIds: number[]
+  createdAt: number
+  updatedAt: number
+}
+
+export interface GuestTrial {
+  answered: number
+  limit: number
+}
+
+export const GUEST_TRIAL_LIMIT = 10
+
+export const IDENTITY_LABEL: Record<LearningIdentity, string> = {
+  student: '学生',
+  adult: '成人兴趣',
+  exam: '考试冲刺',
+}
+
+export const GOAL_LABEL: Record<LearningGoal, string> = {
+  jlpt: '通过 JLPT',
+  travel: '旅行会话',
+  anime: '动漫 / 追剧',
+  work: '工作使用',
+  habit: '养成习惯',
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   dailyNewWords: 12,
   meaningTimer: 8,

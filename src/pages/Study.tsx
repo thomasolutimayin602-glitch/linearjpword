@@ -23,14 +23,14 @@ export default function Study() {
   useEffect(() => {
     if (r.state !== 'idle') return
     const senseId = location.state?.senseId
-    if (location.state?.from === 'wrong' && typeof senseId === 'number' && !practiceStarted.current) {
+    if ((location.state?.from === 'wrong' || location.state?.from === 'practice') && typeof senseId === 'number' && !practiceStarted.current) {
       practiceStarted.current = true
       void store.startPractice(senseId).then(started => {
-        if (!started) nav('/wrong', { replace: true })
+        if (!started) nav('/', { replace: true })
       })
       return
     }
-    if (location.state?.from !== 'wrong') nav('/', { replace: true })
+    if (location.state?.from !== 'wrong' && location.state?.from !== 'practice') nav('/', { replace: true })
   }, [r.state, nav, location.state, store])
 
   const w = r.current != null ? WORDS_BY_ID.get(r.current) : undefined
@@ -39,6 +39,7 @@ export default function Study() {
   const queueLen = r.done.sensePasses + r.queue.length + (r.current != null ? 1 : 0)
 
   const isFeedback = r.feedback !== null
+  const guestBlocked = !store.profile && store.guest.answered >= store.guest.limit
   const isListen = mode === 'listen'
   const isSpell = mode === 'spell'
     const isWordMode = mode === 'word'
@@ -93,6 +94,17 @@ export default function Study() {
     return <Summary store={store} onDone={() => { store.quit(); nav('/') }} />
   }
 
+  if (r.state === 'drill' && guestBlocked && !isFeedback) {
+    return (
+      <GuestTrialGate
+        answered={store.guest.answered}
+        limit={store.guest.limit}
+        onOnboarding={() => nav('/onboarding')}
+        onBack={() => { store.quit(); nav('/') }}
+      />
+    )
+  }
+
   if (!w || !rec || r.state !== 'drill') return null
 
   const opts = r.question?.options ?? []
@@ -103,7 +115,7 @@ export default function Study() {
     <div className="anim-up">
       {/* ===== Header ===== */}
       <div className="flex items-center gap-3 mb-4">
-        <button onClick={handleExit} aria-label="Back" className="w-9 h-9 flex items-center justify-center rounded-full bg-white text-gray-500 border border-gray-100 shadow-sm active:scale-90 transition-all">
+        <button onClick={handleExit} aria-label="返回" className="w-9 h-9 flex items-center justify-center rounded-full bg-white text-gray-500 border border-gray-100 shadow-sm active:scale-90 transition-all">
           <IconBack width={20} height={20} />
         </button>
         <div className="flex-1 min-w-0">
@@ -127,14 +139,14 @@ export default function Study() {
         {/* ===== LISTEN ===== */}
         {isListen && (
           <div className="text-center py-2">
-            <div className="mb-2 text-[12px] text-gray-400">Read the new word aloud</div>
+            <div className="mb-2 text-[12px] text-gray-400">先听发音，再跟读</div>
             <div className="text-[40px] font-bold tracking-wide text-gray-900 leading-tight">{w.word || w.kana}</div>
             {w.word !== w.kana && <div className="text-[20px] text-gray-400 mt-1">{w.kana}</div>}
             <div className="text-[13px] text-gray-500 mt-1.5">{w.romaji}</div>
             <div className="flex items-center justify-center gap-3 mt-4">
               <AudioPlayer text={w.kana} size={56} />
             </div>
-            <div className="text-[12px] text-gray-400 mt-3">👂 Listen, then say it out loud</div>
+            <div className="text-[12px] text-gray-400 mt-3">👂 听一遍，再大声读出来</div>
             <button
               onClick={handleNext}
               className="btn-primary w-full py-4 text-[16px] font-bold mt-5"
@@ -160,7 +172,7 @@ export default function Study() {
                 <CountdownTimer seconds={timerSeconds} onExpire={handleExpire} running={!isFeedback} key={`${r.current}-${r.modePos}`} />
               </div>
             </div>
-            <div className="text-[12px] text-gray-500 mt-2 mb-3">Choose the correct meaning</div>
+            <div className="text-[12px] text-gray-500 mt-2 mb-3">选择正确的中文释义</div>
             <ChoiceOptions
               opts={opts} correctIdx={correctIdx} isFeedback={isFeedback} fb={fb!}
               onPick={handleAnswer}
@@ -185,7 +197,7 @@ export default function Study() {
                 <CountdownTimer seconds={timerSeconds} onExpire={handleExpire} running={!isFeedback} key={`${r.current}-${r.modePos}`} />
               </div>
             </div>
-            <div className="text-[12px] text-gray-500 mt-2 mb-3">Choose the correct word</div>
+            <div className="text-[12px] text-gray-500 mt-2 mb-3">选择对应的日语单词</div>
             <ChoiceOptions
               opts={opts} correctIdx={correctIdx} isFeedback={isFeedback} fb={fb!}
               onPick={handleAnswer}
@@ -232,7 +244,7 @@ export default function Study() {
                 disabled={!input.trim()}
                 className="btn-primary w-full py-4 text-[16px] font-bold mt-3"
               >
-                Check ✓
+                检查 ✓
               </button>
             ) : (
               <FeedbackPanel w={w} fb={fb!} correctText={`${w.romaji} ・ ${w.kana}`} />
@@ -244,7 +256,7 @@ export default function Study() {
         {mode === 'example' && (
           <div>
             <div className="text-center mb-4">
-              <div className="text-[13px] text-gray-400 mb-2">Read the example sentence</div>
+              <div className="text-[13px] text-gray-400 mb-2">朗读例句，判断是否记住</div>
               <div className="text-[25px] font-bold text-gray-900 leading-relaxed">{w.examples[0]?.ja ?? `${w.kana}。`}</div>
               <div className="text-[14px] text-gray-500 mt-2">{w.examples[0]?.en ?? w.meaning}</div>
               <div className="flex items-center justify-center gap-2 mt-3">
@@ -332,7 +344,7 @@ function ChoiceOptions({ opts, correctIdx, isFeedback, fb, onPick }: {
 function NotSureButton({ onNotSure }: { onNotSure: () => void }) {
   return (
     <button onClick={onNotSure} className="w-full mt-3 py-2.5 text-[13px] text-gray-400 hover:text-gray-600 transition-colors">
-      ❓ I'm not sure — show the answer
+      ❓ 不确定？查看答案
     </button>
   )
 }
@@ -394,6 +406,7 @@ const KANA_PAGES = {
   清音: ['あ', 'か', 'さ', 'た', 'な', 'は', 'ま', 'や', 'ら', 'わ', 'い', 'き', 'し', 'ち', 'に', 'ひ', 'み', 'り', 'う', 'く', 'す', 'つ', 'ぬ', 'ふ', 'む', 'ゆ', 'る', 'を', 'え', 'け', 'せ', 'て', 'ね', 'へ', 'め', 'れ', 'お', 'こ', 'そ', 'と', 'の', 'ほ', 'も', 'よ', 'ろ', 'ん'],
   浊音: ['が', 'ぎ', 'ぐ', 'げ', 'ご', 'ざ', 'じ', 'ず', 'ぜ', 'ぞ', 'だ', 'ぢ', 'づ', 'で', 'ど', 'ば', 'び', 'ぶ', 'べ', 'ぼ', 'ぱ', 'ぴ', 'ぷ', 'ぺ', 'ぽ', 'ゔ', 'っ', 'ー'],
   拗音: ['きゃ', 'きゅ', 'きょ', 'しゃ', 'しゅ', 'しょ', 'ちゃ', 'ちゅ', 'ちょ', 'にゃ', 'にゅ', 'にょ', 'ひゃ', 'ひゅ', 'ひょ', 'みゃ', 'みゅ', 'みょ', 'りゃ', 'りゅ', 'りょ', 'ぎゃ', 'ぎゅ', 'ぎょ', 'じゃ', 'じゅ', 'じょ', 'びゃ', 'びゅ', 'びょ', 'ぴゃ', 'ぴゅ', 'ぴょ'],
+  片假名: ['ア', 'カ', 'サ', 'タ', 'ナ', 'ハ', 'マ', 'ヤ', 'ラ', 'ワ', 'イ', 'キ', 'シ', 'チ', 'ニ', 'ヒ', 'ミ', 'リ', 'ウ', 'ク', 'ス', 'ツ', 'ヌ', 'フ', 'ム', 'ユ', 'ル', 'ヲ', 'エ', 'ケ', 'セ', 'テ', 'ネ', 'ヘ', 'メ', 'レ', 'オ', 'コ', 'ソ', 'ト', 'ノ', 'ホ', 'モ', 'ヨ', 'ロ', 'ン', 'ッ', 'ー'],
 } as const
 
 function KanaKeyboard({ value, onChange }: { value: string; onChange: (value: string) => void }) {
@@ -406,11 +419,39 @@ function KanaKeyboard({ value, onChange }: { value: string; onChange: (value: st
         ))}
         <button onClick={() => onChange(value.slice(0, -1))} className="px-3 rounded-lg bg-white text-gray-500 text-[13px]" aria-label="删除一个假名">⌫</button>
       </div>
-      <div className={`grid gap-1 ${page === '清音' ? 'grid-cols-10' : 'grid-cols-7'}`}>
+      <div className={`grid gap-1 ${page === '清音' || page === '片假名' ? 'grid-cols-10' : 'grid-cols-7'}`}>
         {KANA_PAGES[page].map(kana => (
           <button key={kana} onClick={() => onChange(value + kana)} className="min-h-8 rounded-lg bg-white border border-gray-100 text-[14px] font-semibold text-gray-700 active:bg-[#FFF0F0] active:text-[#FF5252]">{kana}</button>
         ))}
       </div>
+    </div>
+  )
+}
+
+function GuestTrialGate({ answered, limit, onOnboarding, onBack }: {
+  answered: number; limit: number; onOnboarding: () => void; onBack: () => void
+}) {
+  return (
+    <div className="anim-up text-center pt-10">
+      <div className="text-[52px] mb-3">🎯</div>
+      <h2 className="text-[24px] font-extrabold text-gray-900">试学完成</h2>
+      <p className="text-[13px] text-gray-400 mt-2 leading-6">
+        你已完成 {answered} / {limit} 题。<br />建立学习档案后解锁完整计划、复习和统计。
+      </p>
+      <div className="card p-4 mt-6 text-left">
+        <div className="text-[13px] font-bold text-gray-800 mb-2">建立档案后可以</div>
+        <ul className="text-[12px] text-gray-500 leading-7">
+          <li>· 按目标和水平生成每日新词与复习计划</li>
+          <li>· 保存错词、收藏和完整学习记录</li>
+          <li>· 随时修改节奏，计划保存在本机</li>
+        </ul>
+      </div>
+      <button onClick={onOnboarding} className="btn-primary w-full py-4 text-[16px] font-bold mt-5">
+        建立学习档案
+      </button>
+      <button onClick={onBack} className="btn-ghost w-full py-3.5 text-[14px] font-bold mt-2.5">
+        返回首页
+      </button>
     </div>
   )
 }
