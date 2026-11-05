@@ -207,11 +207,16 @@ export function buildOptions(
   if (!target) return { options: [], correct: -1 }
 
   const answer = field === 'meaning' ? target.meaning : target.kana
-  const distractors = shuffle(
-    WORDS.filter(w => w.id !== senseId && (field === 'meaning' ? w.meaning !== answer : w.kana !== answer)),
-  )
-    .slice(0, useNoneOption ? 2 : 3)
-    .map(w => (field === 'meaning' ? w.meaning : w.kana))
+  const wanted = useNoneOption ? 2 : 3
+  const seen = new Set([answer])
+  const distractors: string[] = []
+  for (const candidate of shuffle(WORDS.filter(w => w.id !== senseId))) {
+    const value = field === 'meaning' ? candidate.meaning : candidate.kana
+    if (seen.has(value)) continue
+    seen.add(value)
+    distractors.push(value)
+    if (distractors.length === wanted) break
+  }
 
   const slots: string[] = [...distractors]
   if (useNoneOption) slots.push('以上都不对')

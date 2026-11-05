@@ -13,7 +13,10 @@ import { dayKey, dayKeyOffset } from '../lib/date'
 
 export default function Home() {
   const nav = useNavigate()
-  const { bootstrap, startSession, states, profile, plan, guest, books, bookId } = useStudyStore()
+  const {
+    bootstrap, startSession, resumeSession, refreshTodayPlan,
+    states, profile, plan, pausedSession, guest, books, bookId,
+  } = useStudyStore()
   const [sessions, setSessions] = useState<SessionRecord[]>([])
 
   const refreshSessions = useMemo(() => async () => {
@@ -23,6 +26,21 @@ export default function Home() {
   useEffect(() => {
     void bootstrap().then(refreshSessions)
   }, [bootstrap, refreshSessions])
+
+  useEffect(() => {
+    const refresh = () => { void refreshTodayPlan() }
+    const timer = window.setInterval(refresh, 60_000)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', refresh)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', refresh)
+    }
+  }, [refreshTodayPlan])
 
   const currentBook = books.find(book => book.id === bookId)
   const currentBookIds = new Set(currentBook?.wordIds ?? WORDS.map(word => word.id))
@@ -54,6 +72,9 @@ export default function Home() {
   const remainingNew = plan ? plan.newIds.filter(id => remaining.includes(id)).length : 0
   const remainingDue = plan ? plan.dueIds.filter(id => remaining.includes(id)).length : 0
   const planTotal = remaining.length
+  const pausedTotal = pausedSession?.progress
+    ? (pausedSession.progress.current != null ? 1 : 0) + pausedSession.progress.queue.length
+    : pausedSession?.senseIds?.length ?? 0
   const todayDone = plan !== null && planTotal === 0
   const guestBlocked = !profile && guest.answered >= guest.limit
   const guestLeft = Math.max(0, guest.limit - guest.answered)
@@ -68,6 +89,11 @@ export default function Home() {
   })()
 
   const handleStart = async () => {
+    if (pausedSession) {
+      const resumed = await resumeSession()
+      if (resumed) nav('/study')
+      return
+    }
     if (guestBlocked) {
       nav('/onboarding')
       return
@@ -173,15 +199,23 @@ export default function Home() {
 
       <button
         onClick={handleStart}
-        disabled={planTotal === 0}
-        className={`btn-primary w-full py-4.5 text-[17px] font-extrabold tracking-wide ${planTotal === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+        disabled={planTotal === 0 && !pausedSession}
+        className={`btn-primary w-full py-4.5 text-[17px] font-extrabold tracking-wide ${planTotal === 0 && !pausedSession ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
-        {guestBlocked
+        {pausedSession
+          ? `继续上次训练 · ${pausedTotal} 词`
+          : guestBlocked
           ? '试学完成 · 建立档案继续'
           : todayDone
             ? '今日任务已完成'
             : `${todayCount > 0 ? '继续背单词' : '开始背单词'} · ${planTotal} 词`}
       </button>
+
+      {pausedSession && (
+        <div className="mt-2 text-center text-[11px] text-[#B7791F]">
+          上次训练已暂停，继续后会从原来的题目和进度恢复
+        </div>
+      )}
 
       {planTotal > 0 && (
         <div className="mt-2 text-center text-[11px] text-gray-400">

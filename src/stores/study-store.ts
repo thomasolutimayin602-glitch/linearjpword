@@ -4,7 +4,7 @@ import { WORDS, WORDS_BY_ID } from '../data/words'
 import { DEFAULT_BOOK_ID } from '../content/books'
 import { contentProvider } from '../content/provider'
 import type {
-  DailyPlan, DrillMode, GuestTrial, SenseState, SessionRecord, Settings, UserProfile, WordBook,
+  DailyPlan, DrillMode, GuestTrial, SenseState, SessionProgress, SessionRecord, Settings, UserProfile, WordBook,
 } from '../types'
 import { DEFAULT_SETTINGS, DRILL_ORDER, GUEST_TRIAL_LIMIT } from '../types'
 import {
@@ -13,6 +13,7 @@ import {
   type Question,
 } from '../engine/review-scheduler'
 import { gradeKana, gradeSpelling } from '../engine/romaji'
+import { resolveSessionCursor } from '../engine/session-resume'
 import { dayKey } from '../lib/date'
 
 export type RunningState = 'idle' | 'drill' | 'summary'
@@ -45,6 +46,7 @@ interface StudyState {
   hydrated: boolean
   profile: UserProfile | null
   plan: DailyPlan | null
+  pausedSession: SessionRecord | null
   guest: GuestTrial
   policyAccepted: boolean
   bootstrapped: boolean
@@ -57,8 +59,11 @@ interface StudyState {
   saveProfile: (draft: ProfileDraft) => Promise<UserProfile>
   setCurrentBook: (bookId: string) => Promise<void>
   ensureTodayPlan: (regenerate?: boolean) => Promise<DailyPlan>
+  refreshTodayPlan: () => Promise<DailyPlan>
   startSession: () => Promise<boolean>
   startPractice: (senseId: number) => Promise<boolean>
+  pauseSession: () => Promise<void>
+  resumeSession: () => Promise<boolean>
   _completeMode: (mode: DrillMode, correct: boolean, guessed?: boolean, picked?: number) => void
   answerMeaningWord: (index: number) => void
   answerSpelling: (text: string) => void
@@ -85,6 +90,45 @@ const EMPTY: Runtime = {
   passWrong: false, question: null, questionAt: null,
   feedback: null, lastUndo: null,
   done: { correct: 0, wrong: 0, sensePasses: 0 },
+}
+
+function progressFrom(runtime: Runtime): SessionProgress {
+  return {
+    queue: [...runtime.queue],
+    current: runtime.current,
+    modePos: runtime.modePos,
+    passWrong: runtime.passWrong,
+    question: runtime.question ? { ...runtime.question, options: [...runtime.question.options] } : null,
+    feedback: runtime.feedback ? { ...runtime.feedback } : null,
+    done: { ...runtime.done },
+  }
+}
+
+function withProgress(
+  session: SessionRecord,
+  runtime: Runtime,
+  status: NonNullable<SessionRecord['status']> = 'running',
+): SessionRecord {
+  return {
+    ...session,
+    status,
+    progress: progressFrom(runtime),
+    lastActiveAt: Date.now(),
+  }
+}
+
+async function closeOpenSessions(): Promise<void> {
+  const open = await db.sessions.filter(session => session.finishedAt === null).toArray()
+  if (open.length === 0) return
+  const now = Date.now()
+  await db.sessions.bulkPut(open.map(session => ({
+    ...session,
+    finishedAt: now,
+    durationMs: Math.max(session.durationMs, now - session.startedAt),
+    checkedIn: false,
+    status: 'finished' as const,
+    lastActiveAt: now,
+  })))
 }
 
 function speak(kana: string) {
@@ -133,6 +177,7 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   hydrated: false,
   profile: null,
   plan: null,
+  pausedSession: null,
   guest: { answered: 0, limit: GUEST_TRIAL_LIMIT },
   policyAccepted: false,
   bootstrapped: false,
@@ -168,9 +213,10 @@ export const useStudyStore = create<StudyState>((set, get) => ({
   bootstrap: async () => {
     if (get().bootstrapped) return
     await get().hydrate()
-    const [profile, metaRows] = await Promise.all([
+    const [profile, metaRows, openSessions] = await Promise.all([
       db.profiles.get(LOCAL_PROFILE_ID),
       db.meta.toArray(),
+      db.sessions.filter(session => session.finishedAt === null).toArray(),
     ])
     const meta = new Map(metaRows.map(row => [row.key, row.value]))
     const storedGuest = meta.get(META_GUEST) as Partial<GuestTrial> | undefined
@@ -188,9 +234,24 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     if (normalizedProfile && profile?.bookId !== selectedBookId) {
       await db.profiles.put(normalizedProfile)
     }
+    openSessions.sort((a, b) => a.startedAt - b.startedAt)
+    const pausedSession = openSessions.at(-1) ?? null
+    const staleSessions = openSessions.slice(0, -1)
+    if (staleSessions.length > 0) {
+      const now = Date.now()
+      await db.sessions.bulkPut(staleSessions.map(session => ({
+        ...session,
+        finishedAt: now,
+        durationMs: Math.max(session.durationMs, now - session.startedAt),
+        checkedIn: false,
+        status: 'finished' as const,
+        lastActiveAt: now,
+      })))
+    }
     set({
       profile: normalizedProfile,
       bookId: selectedBookId,
+      pausedSession,
       guest,
       policyAccepted: Boolean(meta.get(META_POLICY)),
       bootstrapped: true,
@@ -287,6 +348,13 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     return plan
   },
 
+  refreshTodayPlan: async () => {
+    const expectedId = `plan-${dayKey()}-${get().bookId}`
+    const current = get().plan
+    if (current?.id === expectedId) return current
+    return get().ensureTodayPlan()
+  },
+
   startSession: async () => {
     await get().hydrate()
     const { states, settings, guest, profile } = get()
@@ -300,8 +368,20 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     const [first, ...queue] = sessionIds
 
     const now = Date.now()
+    await closeOpenSessions()
+    const rec = states.get(first)!
+    const question = buildQuestionFor(first, 0, rec.mastery, settings.noneOptionMinMastery)
+    const runtime: Runtime = {
+      ...EMPTY,
+      state: 'drill',
+      queue,
+      current: first,
+      modePos: 0,
+      question,
+      questionAt: now,
+    }
     const newSenses = sessionIds.filter(id => states.get(id)?.status === 'new').length
-    const session: SessionRecord = {
+    const session = withProgress({
       id: `s-${now}`,
       date: dayKey(),
       startedAt: now,
@@ -315,23 +395,13 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       completedSenses: 0,
       senseIds: sessionIds,
       wrongSenseIds: [],
-    }
+    }, runtime)
     await db.sessions.put(session)
-
-    const rec = states.get(first)!
-    const question = buildQuestionFor(first, 0, rec.mastery, settings.noneOptionMinMastery)
 
     set({
       session,
-      runtime: {
-        ...EMPTY,
-        state: 'drill',
-        queue,
-        current: first,
-        modePos: 0,
-        question,
-        questionAt: Date.now(),
-      },
+      pausedSession: null,
+      runtime,
     })
     return true
   },
@@ -343,9 +413,18 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     const rec = states.get(senseId)
     if (!rec || rec.status === 'archived') return false
     const now = Date.now()
-    const session: SessionRecord = {
+    await closeOpenSessions()
+    const question = buildQuestionFor(senseId, 0, rec.mastery, settings.noneOptionMinMastery)
+    const runtime: Runtime = {
+      ...EMPTY,
+      state: 'drill',
+      current: senseId,
+      question,
+      questionAt: now,
+    }
+    const session = withProgress({
       id: `practice-${now}`,
-        date: dayKey(),
+      date: dayKey(),
       startedAt: now,
       finishedAt: null,
       checkedIn: false,
@@ -357,18 +436,83 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       completedSenses: 0,
       senseIds: [senseId],
       wrongSenseIds: [],
-    }
+    }, runtime)
     await db.sessions.put(session)
     set({
       session,
-      runtime: {
-        ...EMPTY,
-        state: 'drill',
-        current: senseId,
-        question: buildQuestionFor(senseId, 0, rec.mastery, settings.noneOptionMinMastery),
-        questionAt: now,
-      },
+      pausedSession: null,
+      runtime,
     })
+    return true
+  },
+
+  pauseSession: async () => {
+    const runtime = get().runtime
+    const currentSession = get().session
+    if (runtime.state !== 'drill' || !currentSession) {
+      set({ runtime: { ...EMPTY } })
+      return
+    }
+    const now = Date.now()
+    const paused = withProgress({
+      ...currentSession,
+      durationMs: Math.max(currentSession.durationMs, now - currentSession.startedAt),
+    }, runtime, 'paused')
+    await db.sessions.put(paused)
+    set({ session: paused, pausedSession: paused, runtime: { ...EMPTY } })
+  },
+
+  resumeSession: async () => {
+    await get().hydrate()
+    const paused = get().pausedSession
+    if (!paused || paused.finishedAt !== null) {
+      set({ pausedSession: null })
+      return false
+    }
+
+    const { states, settings } = get()
+    const completed = new Set(get().plan?.completedIds ?? [])
+    const resumable = (id: number) => !completed.has(id) && states.get(id)?.status !== 'archived'
+    const saved = paused.progress
+    const { queue, current, modePos, passWrong, feedback, done } = resolveSessionCursor(
+      paused,
+      id => states.has(id) && resumable(id),
+    )
+
+    if (current === null) {
+      const now = Date.now()
+      const finished: SessionRecord = {
+        ...paused,
+        finishedAt: now,
+        durationMs: Math.max(paused.durationMs, now - paused.startedAt),
+        checkedIn: false,
+        status: 'finished',
+        lastActiveAt: now,
+      }
+      await db.sessions.put(finished)
+      set({ pausedSession: null, session: finished })
+      return false
+    }
+
+    const rec = states.get(current)
+    const question = saved?.question
+      ? { ...saved.question, options: [...saved.question.options] }
+      : buildQuestionFor(current, modePos, rec?.mastery ?? 0, settings.noneOptionMinMastery)
+    const runtime: Runtime = {
+      ...EMPTY,
+      state: 'drill',
+      queue,
+      current,
+      modePos,
+      passWrong,
+      question,
+      questionAt: feedback ? null : Date.now(),
+      feedback,
+      done,
+    }
+    const session = withProgress({ ...paused, status: 'running' }, runtime)
+    await db.sessions.put(session)
+    set({ session, pausedSession: null, runtime })
     return true
   },
 
@@ -395,31 +539,32 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       sessionBefore: get().session,
     }
 
+    const nextRuntime: Runtime = {
+      ...r,
+      passWrong,
+      feedback: { correct: effective, guessed: guessed && correct, picked },
+      lastUndo,
+      questionAt: null,
+      done: {
+        correct: r.done.correct + (effective ? 1 : 0),
+        wrong: r.done.wrong + (effective ? 0 : 1),
+        sensePasses: r.done.sensePasses,
+      },
+    }
     const currentSession = get().session
-    const session = currentSession ? {
+    const session = currentSession ? withProgress({
       ...currentSession,
       correct: currentSession.correct + (effective ? 1 : 0),
       wrong: currentSession.wrong + (effective ? 0 : 1),
       wrongSenseIds: effective
         ? currentSession.wrongSenseIds
         : [...new Set([...(currentSession.wrongSenseIds ?? []), cur])],
-    } : null
+    }, nextRuntime) : null
 
     set({
       states,
       session,
-      runtime: {
-        ...r,
-        passWrong,
-        feedback: { correct: effective, guessed: guessed && correct, picked },
-        lastUndo,
-        questionAt: null,
-        done: {
-          correct: r.done.correct + (effective ? 1 : 0),
-          wrong: r.done.wrong + (effective ? 0 : 1),
-          sensePasses: r.done.sensePasses,
-        },
-      },
+      runtime: nextRuntime,
     })
     persist(updated)
     if (session) void db.sessions.put(session)
@@ -478,20 +623,22 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       void db.meta.put({ key: META_GUEST, value: nextGuest })
     }
     const states = new Map(get().states).set(cur, recBefore)
+    const nextRuntime: Runtime = {
+      ...r,
+      passWrong: passWrongBefore,
+      done: doneBefore,
+      feedback: null,
+      lastUndo: null,
+      questionAt: Date.now(),
+    }
+    const session = sessionBefore ? withProgress(sessionBefore, nextRuntime) : null
     set({
       states,
-      session: sessionBefore,
-      runtime: {
-        ...r,
-        passWrong: passWrongBefore,
-        done: doneBefore,
-        feedback: null,
-        lastUndo: null,
-        questionAt: Date.now(),
-      },
+      session,
+      runtime: nextRuntime,
     })
     persist(recBefore)
-    if (sessionBefore) void db.sessions.put(sessionBefore)
+    if (session) void db.sessions.put(session)
   },
 
   proceed: () => {
@@ -503,7 +650,11 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       const cur = r.current
       const rec = get().states.get(cur)!
       const question = buildQuestionFor(cur, nextPos, rec.mastery, get().settings.noneOptionMinMastery)
-      set({ runtime: { ...r, modePos: nextPos, feedback: null, lastUndo: null, question, questionAt: Date.now() } })
+      const runtime: Runtime = { ...r, modePos: nextPos, feedback: null, lastUndo: null, question, questionAt: Date.now() }
+      const currentSession = get().session
+      const session = currentSession ? withProgress(currentSession, runtime) : null
+      set({ session, runtime })
+      if (session) void db.sessions.put(session)
       return
     }
     if (!r.feedback) return
@@ -514,16 +665,18 @@ export const useStudyStore = create<StudyState>((set, get) => ({
     if (!isLastMode) {
       const nextPos = r.modePos + 1
       const question = buildQuestionFor(cur, nextPos, rec.mastery, get().settings.noneOptionMinMastery)
-      set({
-        runtime: {
-          ...r,
-          modePos: nextPos,
-          feedback: null,
-          lastUndo: null,
-          question,
-          questionAt: Date.now(),
-        },
-      })
+      const runtime: Runtime = {
+        ...r,
+        modePos: nextPos,
+        feedback: null,
+        lastUndo: null,
+        question,
+        questionAt: Date.now(),
+      }
+      const currentSession = get().session
+      const session = currentSession ? withProgress(currentSession, runtime) : null
+      set({ session, runtime })
+      if (session) void db.sessions.put(session)
       return
     }
 
@@ -554,38 +707,49 @@ export const useStudyStore = create<StudyState>((set, get) => ({
 
     const next = queue.shift() ?? null
     const currentSession = get().session
-    const session = currentSession ? {
-      ...currentSession,
-      completedSenses: (currentSession.completedSenses ?? 0) + 1,
-    } : null
 
     if (next === null) {
-      const finished: SessionRecord = session
-        ? { ...session, finishedAt: Date.now(), durationMs: Date.now() - session.startedAt, checkedIn: true }
-        : session!
+      const now = Date.now()
+      const summaryRuntime: Runtime = { ...EMPTY, state: 'summary', done }
+      const finished = currentSession ? {
+        ...withProgress({
+          ...currentSession,
+          completedSenses: (currentSession.completedSenses ?? 0) + 1,
+        }, summaryRuntime, 'finished'),
+        finishedAt: now,
+        durationMs: Math.max(currentSession.durationMs, now - currentSession.startedAt),
+        checkedIn: true,
+        lastActiveAt: now,
+      } : null
       if (finished) void db.sessions.put(finished)
-      set({ states, session: finished, runtime: { ...EMPTY, state: 'summary', done } })
+      set({ states, session: finished, pausedSession: null, runtime: summaryRuntime })
       return
     }
 
     const nextRecState = get().states.get(next)!
     const question = buildQuestionFor(next, 0, nextRecState.mastery, get().settings.noneOptionMinMastery)
+    const runtime: Runtime = {
+      ...r,
+      queue,
+      current: next,
+      modePos: 0,
+      passWrong: false,
+      feedback: null,
+      lastUndo: null,
+      question,
+      questionAt: Date.now(),
+      done,
+    }
+    const session = currentSession ? withProgress({
+      ...currentSession,
+      completedSenses: (currentSession.completedSenses ?? 0) + 1,
+    }, runtime) : null
     set({
       states,
       session,
-      runtime: {
-        ...r,
-        queue,
-        current: next,
-        modePos: 0,
-        passWrong: false,
-        feedback: null,
-        lastUndo: null,
-        question,
-        questionAt: Date.now(),
-        done,
-      },
+      runtime,
     })
+    if (session) void db.sessions.put(session)
   },
 
   finish: async () => {
@@ -598,13 +762,15 @@ export const useStudyStore = create<StudyState>((set, get) => ({
       const finished: SessionRecord = {
         ...s,
         finishedAt: Date.now(),
-        durationMs: Date.now() - s.startedAt,
+        durationMs: Math.max(s.durationMs, Date.now() - s.startedAt),
         checkedIn: false,
+        status: 'finished',
+        lastActiveAt: Date.now(),
       }
       await db.sessions.put(finished)
-      set({ session: finished })
+      set({ session: finished, pausedSession: null })
     }
-    set({ runtime: { ...EMPTY } })
+    set({ runtime: { ...EMPTY }, pausedSession: null })
   },
 
   togglePin: async (id: number) => {

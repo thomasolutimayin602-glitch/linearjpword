@@ -80,6 +80,17 @@ export interface QueueItem {
   retry: boolean
 }
 
+/** Exact interactive state needed to resume a paused session in place. */
+export interface SessionProgress {
+  queue: number[]
+  current: number | null
+  modePos: number
+  passWrong: boolean
+  question: { options: string[]; correct: number } | null
+  feedback: { correct: boolean; guessed?: boolean; picked?: number } | null
+  done: { correct: number; wrong: number; sensePasses: number }
+}
+
 export interface SessionRecord {
   id: string
   date: string           // YYYY-MM-DD
@@ -97,6 +108,11 @@ export interface SessionRecord {
   senseIds?: number[]
   /** unique senses answered wrong at least once */
   wrongSenseIds?: number[]
+  /** running/paused with finishedAt = null, finished with finishedAt set */
+  status?: 'running' | 'paused' | 'finished'
+  /** persisted cursor and answer feedback for resuming in place */
+  progress?: SessionProgress
+  lastActiveAt?: number
 }
 
 export interface Settings {

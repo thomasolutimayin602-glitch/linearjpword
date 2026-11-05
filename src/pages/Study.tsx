@@ -20,9 +20,19 @@ export default function Study() {
 
   const [input, setInput] = useState('')
   const practiceStarted = useRef(false)
+  const exitingRef = useRef(false)
 
   useEffect(() => {
     if (r.state !== 'idle') return
+    if (store.pausedSession) {
+      if (!practiceStarted.current && !exitingRef.current) {
+        practiceStarted.current = true
+        void store.resumeSession().then(resumed => {
+          if (!resumed) nav('/', { replace: true })
+        })
+      }
+      return
+    }
     const senseId = location.state?.senseId
     if ((location.state?.from === 'wrong' || location.state?.from === 'practice') && typeof senseId === 'number' && !practiceStarted.current) {
       practiceStarted.current = true
@@ -68,7 +78,8 @@ export default function Study() {
   }, [store])
 
   const handleExit = useCallback(async () => {
-    await store.quit()
+    exitingRef.current = true
+    await store.pauseSession()
     nav('/')
   }, [nav, store])
 
@@ -356,6 +367,7 @@ function FeedbackPanel({ w, fb, correctText }: {
   correctText: string
 }) {
   const { correct, guessed } = fb ?? { correct: false, guessed: false }
+  const canUndo = useStudyStore(state => state.runtime.lastUndo !== null)
   return (
     <div className="mt-4">
       <div
@@ -378,9 +390,11 @@ function FeedbackPanel({ w, fb, correctText }: {
         </div>
       )}
       <div className="flex gap-2.5 mt-3.5">
-        <button onClick={() => useStudyStore.getState().undo()} className="btn-ghost flex-1 py-3 text-[14px] font-semibold">
-          <IconRefresh width={15} height={15} className="inline -mt-0.5 mr-1" /> 反悔
-        </button>
+        {canUndo && (
+          <button onClick={() => useStudyStore.getState().undo()} className="btn-ghost flex-1 py-3 text-[14px] font-semibold">
+            <IconRefresh width={15} height={15} className="inline -mt-0.5 mr-1" /> 反悔
+          </button>
+        )}
         <button onClick={() => { store_next() }} className="btn-primary flex-[2] py-3 text-[15px] font-bold">
           继续 →
         </button>
@@ -463,6 +477,30 @@ function Summary({ store, onDone }: { store: ReturnType<typeof useStudyStore.get
   const wrong = d.wrong
   const words = d.sensePasses
   const accuracy = correct + wrong > 0 ? Math.round((correct / (correct + wrong)) * 100) : 0
+  const [shared, setShared] = useState(false)
+
+  const shareResult = async () => {
+    const text = `拓词日语 · 今天完成了 ${words} 个词，答对 ${correct} 题，答错 ${wrong} 题，正确率 ${accuracy}%。`
+    try {
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: '拓词日语学习结果', text })
+          setShared(true)
+          window.setTimeout(() => setShared(false), 2000)
+          return
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') return
+        }
+      }
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(text)
+        setShared(true)
+        window.setTimeout(() => setShared(false), 2000)
+      }
+    } catch {
+      /* sharing and clipboard are best-effort */
+    }
+  }
 
   return (
     <div className="relative text-center anim-up">
@@ -520,7 +558,10 @@ function Summary({ store, onDone }: { store: ReturnType<typeof useStudyStore.get
         </div>
       )}
 
-      <button onClick={onDone} className="btn-primary w-full py-4 text-[16px] font-bold mt-7">
+      <button onClick={shareResult} className="btn-ghost w-full py-3.5 text-[13px] font-bold mt-6">
+        {shared ? '已分享 / 已复制 ✓' : '分享本次学习结果'}
+      </button>
+      <button onClick={onDone} className="btn-primary w-full py-4 text-[16px] font-bold mt-2.5">
         完成 ✓
       </button>
     </div>
